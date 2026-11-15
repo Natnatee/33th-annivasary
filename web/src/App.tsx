@@ -7,6 +7,7 @@ import {
   VolumeX, 
   Mic, 
   RotateCw,
+  Pause,
   Check
 } from 'lucide-react';
 import { bleService } from './ble';
@@ -17,6 +18,7 @@ const THRESHOLD_LEVELS = [65, 72, 80, 86, 92]; // Index 0..4 -> Levels 1..5
 const VOLUME_LEVELS = [0, 6, 12, 18, 24, 30];   // 0 = Mute, 1..5
 
 function getSpeedLevel(delay: number): number {
+  if (delay === 0) return 0;
   const lvl = 6 - delay;
   return Math.max(1, Math.min(5, lvl));
 }
@@ -96,7 +98,7 @@ export default function App() {
 
   const handleSelectSpeed = async (lvl: number) => {
     setSpeedLevel(lvl);
-    const delay = 6 - lvl; // Level 1 -> 5ms (slow), Level 5 -> 1ms (fast)
+    const delay = lvl === 0 ? 0 : (6 - lvl); // Level 0 -> 0 (stop), Level 1 -> 5ms (slow), Level 5 -> 1ms (fast)
     try {
       await bleService.writeSpeed(delay);
     } catch (e) {
@@ -217,15 +219,28 @@ export default function App() {
           </button>
         </div>
 
-        {/* Setting 1: Speed (หมุนช้า - เร็ว) */}
+        {/* Setting 1: Speed (หมุนช้า - เร็ว + ไม่หมุน) */}
         <div className={`bg-white rounded-3xl p-5 shadow-sm border border-stone-200 space-y-3 transition-opacity duration-300 ${!isConnected ? 'opacity-40 pointer-events-none' : ''}`}>
           <div className="flex items-center gap-2.5">
             <RotateCw className="w-6 h-6 text-amber-600" />
             <h2 className="text-lg font-bold text-stone-800">ความเร็วหมุน</h2>
           </div>
 
-          {/* Level 1 to 5 Buttons */}
-          <div className="grid grid-cols-5 gap-2 pt-1">
+          {/* Stop Button + Level 1 to 5 Buttons */}
+          <div className="grid grid-cols-6 gap-1.5 pt-1">
+            {/* Stop Rotation Button */}
+            <button
+              onClick={() => handleSelectSpeed(0)}
+              className={`py-3.5 rounded-2xl font-bold flex items-center justify-center transition-all cursor-pointer ${
+                speedLevel === 0
+                  ? 'bg-amber-600 text-white shadow-md shadow-amber-600/30 scale-105'
+                  : 'bg-stone-100 active:bg-stone-200 text-stone-500'
+              }`}
+              title="ไม่หมุน"
+            >
+              <Pause className="w-5 h-5 stroke-[2.5]" />
+            </button>
+
             {[1, 2, 3, 4, 5].map((lvl) => (
               <button
                 key={lvl}
@@ -242,8 +257,8 @@ export default function App() {
           </div>
 
           <div className="flex justify-between text-sm font-semibold text-stone-400 px-1 pt-0.5">
-            <span>🐢 ช้า</span>
-            <span>เร็ว 🐇</span>
+            <span>ไม่หมุน / 🐢 ช้า</span>
+            <span>เร็วสุด 🐇</span>
           </div>
         </div>
 

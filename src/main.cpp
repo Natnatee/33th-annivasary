@@ -126,9 +126,15 @@ static void toggle_system(bool enable);
 static void stepper_motor_task(void *pvParameters) {
   while (true) {
     if (stepper_state == STEPPER_RUNNING) {
-      do_one_step(1); // Spin forward
-      current_step_pos = (current_step_pos + 1) % STEPS_PER_REV;
-      vTaskDelay(pdMS_TO_TICKS(step_delay_ms));
+      if (step_delay_ms > 0) {
+        do_one_step(1); // Spin forward
+        current_step_pos = (current_step_pos + 1) % STEPS_PER_REV;
+        vTaskDelay(pdMS_TO_TICKS(step_delay_ms));
+      } else {
+        // Motor disabled from Web/BLE: keep coils off
+        stepper_stop_coils();
+        vTaskDelay(pdMS_TO_TICKS(50));
+      }
     } else if (stepper_state == STEPPER_RETURNING) {
       if (current_step_pos != 0) {
         // Return to 0 via shortest direction
@@ -193,12 +199,16 @@ class SpeedCallbacks : public NimBLECharacteristicCallbacks {
     std::string value = pCharacteristic->getValue();
     if (!value.empty()) {
       uint8_t val = (uint8_t)value[0];
-      if (val >= 1 && val <= 10) {
+      if (val <= 10) {
         step_delay_ms = val;
         preferences.begin("anniv33", false);
         preferences.putUInt("speed", step_delay_ms);
         preferences.end();
-        Serial.printf("[BLE] Updated Speed Delay: %u ms (Saved to Flash)\n", step_delay_ms);
+        if (step_delay_ms == 0) {
+          Serial.println("[BLE] Motor Disabled (Speed = 0, Won't spin)");
+        } else {
+          Serial.printf("[BLE] Updated Speed Delay: %u ms (Saved to Flash)\n", step_delay_ms);
+        }
       }
     }
   }

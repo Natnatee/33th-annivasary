@@ -73,16 +73,16 @@ export class BLEService {
     });
 
     return {
-      speed: speedVal || 3,
+      speed: typeof speedVal === 'number' ? speedVal : 3,
       threshold: threshVal || 80,
-      volume: volVal || 20,
+      volume: volVal !== undefined ? volVal : 20,
       isRunning: stateVal === 1,
     };
   }
 
   async writeSpeed(speed: number): Promise<void> {
     if (!this.charSpeed) return;
-    const data = new Uint8Array([Math.min(Math.max(speed, 1), 10)]);
+    const data = new Uint8Array([Math.min(Math.max(speed, 0), 10)]);
     await this.charSpeed.writeValue(data);
   }
 
