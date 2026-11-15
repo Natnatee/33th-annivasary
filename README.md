@@ -45,14 +45,18 @@
 
 ### ตารางการเชื่อมต่อขา (Wiring Connection)
 
-| ขา INMP441 | ขา ESP32-S3 SuperMini | หน้าที่ |
+| ขา อุปกรณ์ | ขา ESP32-S3 SuperMini | หน้าที่ |
 |---|---|---|
-| **VDD** | **3.3V** | จ่ายไฟเลี้ยง 3.3V (ห้ามต่อ 5V) |
-| **GND** | **GND** | กราวด์ร่วม |
-| **SD** | **GPIO 4** | I2S Serial Data (Data Out -> ESP32 Data In) |
-| **WS** | **GPIO 5** | I2S Word Select (LRCK) |
-| **SCK** | **GPIO 6** | I2S Serial Clock (BCLK) |
-| **L/R** | **GND** | เลือกลำโพง/ช่องซ้าย (Left Channel) |
+| **INMP441 VDD** | **3.3V** | จ่ายไฟเลี้ยง 3.3V (ห้ามต่อ 5V) |
+| **INMP441 GND** | **GND** | กราวด์ร่วม |
+| **INMP441 SD** | **GPIO 4** | I2S Serial Data |
+| **INMP441 WS** | **GPIO 5** | I2S Word Select (LRCK) |
+| **INMP441 SCK** | **GPIO 6** | I2S Serial Clock (BCLK) |
+| **INMP441 L/R** | **GND** | เลือกลำโพง/ช่องซ้าย (Left Channel) |
+| **LED 1 (+R)** | **GPIO 11** | ไฟติดเมื่อตรวจพบคำว่า "MARVIN" |
+| **LED 2 (+R)** | **GPIO 12** | ไฟติดเมื่อตรวจพบคำว่า "MARVIN" |
+| **LED 3 (+R)** | **GPIO 13** | ไฟติดเมื่อตรวจพบคำว่า "MARVIN" |
+| **LED ขาลบ (-)** | **GND** | ต่อผ่านตัวต้านทานลง GND ร่วม |
 
 ## Wiring Notes
 
@@ -94,8 +98,9 @@ pio device monitor -b 115200
 
 - [x] ตรวจสอบฮาร์ดแวร์ ESP32-S3 SuperMini & PSRAM (2MB QSPI)
 - [x] ทดสอบการอ่านค่าเสียง I2S จาก INMP441
-- [ ] ติดตั้งและคอมไพล์โมเดล TinyML Keyword Spotting (Wake Word)
-- [ ] เพิ่มการตอบสนอง Output เมื่อตรวจจับคำสำคัญได้
+- [x] ติดตั้งและคอมไพล์โมเดล TinyML Wake Word ("MARVIN")
+- [x] ควบคุมไฟ LED 3 หลอด (GPIO 11, 12, 13) ตอบสนองเมื่อตรวจพบคำสั่งเสียง
+- [ ] พัฒนาโมเดลคำสั่งภาษาไทย / Custom Wake Word ผ่าน Edge Impulse
 
 ## License
 

@@ -6,13 +6,14 @@
 
 ## Goals
 
-1. **Phase 1 (ปัจจุบัน):** ตรวจสอบฮาร์ดแวร์ บอร์ด ESP32-S3 SuperMini, ตรวจสอบการเปิดใช้งาน PSRAM (QSPI 2MB) และทดสอบอ่านค่าสัญญาณเสียงผ่าน I2S แสดงค่า RMS/Peak บน Serial Monitor
-2. **Phase 2 (ถัดไป):** พัฒนาระบบ Wake Word Detection (ผ่าน Edge Impulse หรือ ESP-SR / microWakeWord) ตามขนาดหน่วยความจำที่รองรับ
+1. **Phase 1 (Completed):** ตรวจสอบฮาร์ดแวร์ บอร์ด ESP32-S3 SuperMini, ตรวจสอบการเปิดใช้งาน PSRAM (QSPI 2MB) และทดสอบอ่านค่าสัญญาณเสียงผ่าน I2S สำเร็จ
+2. **Phase 2 (ปัจจุบัน - Active):** ทดสอบโมเดล Wake Word สากล "MARVIN" ด้วย Edge Impulse Continuous Inference ควบคุม LED 3 หลอดภายนอก (GPIO 11, 12, 13) และ Onboard LED (GPIO 48)
 
 ## Hardware
 
 - **MCU Board:** ESP32-S3 SuperMini (Flash 4MB, PSRAM QSPI 2MB, Dual-core 240MHz)
 - **Sensor:** INMP441 Omnidirectional MEMS Microphone Module with I2S digital output
+- **Outputs:** LED 3 หลอด (GPIO 11, 12, 13) พร้อมตัวต้านทาน และ Onboard Red LED (GPIO 48)
 
 ## Pin Map
 
@@ -24,6 +25,10 @@
 | Channel Select | GND | INMP441 (L/R) | Input (Hardwire) | ต่อลง GND เลือก Left Channel |
 | Power VDD | 3.3V | INMP441 (VDD) | Power | ใช้แรงดัน 3.3V เท่านั้น ห้ามต่อ 5V |
 | Ground | GND | INMP441 (GND) | Power | กราวด์ร่วม |
+| LED 1 Output | GPIO 11 | External LED 1 | Output | ติดค้าง 3 วินาทีเมื่อตรวจจับ Wake Word |
+| LED 2 Output | GPIO 12 | External LED 2 | Output | ติดค้าง 3 วินาทีเมื่อตรวจจับ Wake Word |
+| LED 3 Output | GPIO 13 | External LED 3 | Output | ติดค้าง 3 วินาทีเมื่อตรวจจับ Wake Word |
+| Status LED | GPIO 48 | Onboard Red LED | Output | สว่างพร้อม LED ภายนอก |
 
 ## Electrical / Safety Notes
 
@@ -57,8 +62,10 @@ pio device monitor -b 115200
 
 ## Current State
 
-- สถานะ: **Phase 1 - Hardware Verification & I2S Audio Testing**
-- สภาพแวดล้อม: PlatformIO ถูกสร้างพร้อมคอนฟิกบอร์ดและโครงร่างโค้ดอ่าน I2S
+- สถานะ: **Phase 2 Verified & Working!**
+- โมเดล Wake Word "MARVIN" (Edge Impulse Continuous Inference) รันบน ESP32-S3 SuperMini ได้อย่างราบรื่น
+- ขับสัญญาณควบคุม LED 3 หลอด (GPIO 11, 12, 13) และ Onboard LED (GPIO 48) ติดสว่าง 3 วินาทีเมื่อตรวจพบคำสั่งเสียงได้สำเร็จ
+- Hardware Verified: PSRAM 2MB QSPI ทำงานร่วมกับ DMA Audio Buffer ได้เสถียร ไม่พบอาการกระตุกหรือหน่วยความจำล้น
 
 ## Open Questions
 
