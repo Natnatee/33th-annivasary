@@ -1,86 +1,91 @@
-# 33th-annivasary
+# 33th-anniversary (Interactive Anniversary Gift)
 
 ## Overview
 
-โปรเจคสร้างเซนเซอร์ตรวจจับเสียง (Wake Word / Voice Detection) โดยใช้บอร์ดไมโครคอนโทรลเลอร์ ESP32-S3 SuperMini ร่วมกับเซนเซอร์ไมโครโฟนดิจิทัล INMP441 (I2S MEMS Microphone)
+โปรเจกต์กล่องของขวัญฉลองครบรอบ 33 ปี (33rd Anniversary Interactive Gift) ทำงานบน **ESP32-S3 SuperMini** (Flash 4MB, PSRAM QSPI 2MB) ผสานระบบ AI ตรวจจับคำสั่งเสียงภาษาไทยคำว่า **"สามสิบสามปี"** (Edge Impulse EON Continuous Inference), มอเตอร์หมุนแท่นโชว์โมเดล 28BYJ-48 (ULN2003 Driver), เอาต์พุตไฟ 100mA, และระบบจูนค่าผ่านหน้าเว็บด้วย **Web Bluetooth (Web BLE)** โฮสต์บน Vercel
 
-## Goals
+---
 
-1. **Phase 1 (Completed):** ตรวจสอบฮาร์ดแวร์ บอร์ด ESP32-S3 SuperMini, ตรวจสอบการเปิดใช้งาน PSRAM (QSPI 2MB) และทดสอบอ่านค่าสัญญาณเสียงผ่าน I2S สำเร็จ
-2. **Phase 2 (Completed):** ทดสอบโมเดล Wake Word สากล "MARVIN" ด้วย Edge Impulse Continuous Inference สำเร็จ
-3. **Phase 3 (Active):** Custom Wake Word ฉลองครบรอบแต่งงาน 33 ปี ตรวจจับเสียงคำว่า **"สามสิบสามปี"** (`33_years`) พร้อมคลาส `unknown` และ `noise` ป้องกันการลั่น ควบคุมไฟ LED 3 หลอดแบบเรียงลำดับ (Sequential Light-Up) ค้างไว้ 5 วินาที
+## Production Links
 
-## Hardware
+- **Live Web BLE Controller (Vercel):** [https://web-liard-nine-63.vercel.app/](https://web-liard-nine-63.vercel.app/)
+- **Obsidian Vault Runbook:** [ESP32_S3_EdgeImpulse_WakeWord_Runbook.md](file:///G:/My%20Drive/AI%20Agent%20Vault/MCU/ESP32/ESP32_S3_EdgeImpulse_WakeWord_Runbook.md)
 
-- **MCU Board:** ESP32-S3 SuperMini (Flash 4MB, PSRAM QSPI 2MB, Dual-core 240MHz)
-- **Sensor:** INMP441 Omnidirectional MEMS Microphone Module with I2S digital output
-- **Outputs:** LED 3 หลอด (GPIO 11, 12, 13) พร้อมตัวต้านทาน และ Onboard Red LED (GPIO 48)
+---
+
+## 4-Part System Architecture
+
+1. **Wake Word Detection (Completed & Verified):**
+   - ตรวจจับคำว่า **"สามสิบสามปี"** (`33_years`) ทำหน้าที่เป็นสวิตช์ Toggle ON/OFF
+   - ป้องกันการ Detect เบิ้ลด้วย Cooldown 2.5 วินาที
+   - ค่าความไว (Threshold): ค่าเริ่มต้น `0.80` (ปรับแต่งได้ผ่าน Web BLE `0.50` - `0.99`)
+2. **DFPlayer Mini (Music Player - Next Step):**
+   - เล่นเพลงเมื่อสั่งเปิดระบบ และหยุดเพลงเมื่อสั่งปิด
+   - ปรับระดับเสียง (Volume 0 - 30) ผ่าน Web BLE และบันทึกลง Flash
+3. **28BYJ-48 Stepper Motor + ULN2003 (Completed & Verified):**
+   - ควบคุมแบบ 8-step half-stepping (4,096 steps/rev) หมุนนุ่มนวล
+   - รันเป็น Background Task บน **Core 0** (FreeRTOS) ไม่สะดุดกับ I2S Audio บน Core 1
+   - **ระบบหมุนกลับตำแหน่งเดิม (Return Home to 0°):** เมื่อสั่งปิด มอเตอร์จะคำนวณทางที่สั้นที่สุดแล้วหมุนกลับมาที่จุด 0° ก่อนหยุดจ่ายกระแสเข้าขดลวด (`0 mA`) เพื่อไม่ให้มอเตอร์ร้อน
+4. **Light Output (Completed & Verified for Toggle):**
+   - ขา GPIO 13 + Onboard Red LED 48
+   - สว่างค้างขณะทำงาน และจะดับลง**หลังจากที่มอเตอร์หมุนกลับถึงจุด 0° เรียบร้อยแล้วเท่านั้น**
+5. **Web Bluetooth Interface (Completed & Verified):**
+   - หน้าเว็บ [https://web-liard-nine-63.vercel.app/](https://web-liard-nine-63.vercel.app/) ทำงานผ่าน Google Chrome / Edge บน Android/PC/Mac
+   - **5-Minute Config Window on Boot:** หลังเสียบปลั๊ก บอร์ดจะปล่อย BLE `33rd-Anniversary` นาน 5 นาที หากไม่มีใครเชื่อมต่อจะปิดตัวเองเพื่อประหยัดไฟและตัดคลื่นรบกวนไมค์ 100%
+   - ปรับสปีดมอเตอร์, ปรับความไวไมค์, ปรับความดังเพลง และปุ่ม Manual Trigger กดสั่งงานแทนเสียงพูด
+   - ค่าทั้งหมดเซฟลง Flash อัตโนมัติด้วย `Preferences.h` (`anniv33`)
+
+---
 
 ## Pin Map
 
 | Function | Pin | Device | Direction | Notes |
 |---|---|---|---|---|
-| I2S SD (Serial Data) | GPIO 4 | INMP441 (SD) | Input | ข้อมูลเสียงดิจิทัลจากไมค์ |
-| I2S WS (Word Select) | GPIO 5 | INMP441 (WS) | Output | LRCK เลือกรอบเฟรมเสียง |
-| I2S SCK (Serial Clock) | GPIO 6 | INMP441 (SCK) | Output | BCLK สัญญาณนาฬิกา I2S |
-| Channel Select | GND | INMP441 (L/R) | Input (Hardwire) | ต่อลง GND เลือก Left Channel |
-| Power VDD | 3.3V | INMP441 (VDD) | Power | ใช้แรงดัน 3.3V เท่านั้น ห้ามต่อ 5V |
-| Ground | GND | INMP441 (GND) | Power | กราวด์ร่วม |
-| LED 1 Output | GPIO 11 | External LED 1 | Output | ติดค้าง 3 วินาทีเมื่อตรวจจับ Wake Word |
-| LED 2 Output | GPIO 12 | External LED 2 | Output | ติดค้าง 3 วินาทีเมื่อตรวจจับ Wake Word |
-| LED 3 Output | GPIO 13 | External LED 3 | Output | ติดค้าง 3 วินาทีเมื่อตรวจจับ Wake Word |
-| Status LED | GPIO 48 | Onboard Red LED | Output | สว่างพร้อม LED ภายนอก |
+| I2S SD | GPIO 4 | INMP441 (SD) | Input | เสียงดิจิทัลจากไมค์ I2S |
+| I2S WS | GPIO 5 | INMP441 (WS) | Output | LRCK Word Select |
+| I2S SCK | GPIO 6 | INMP441 (SCK) | Output | BCLK Bit Clock |
+| Channel | GND | INMP441 (L/R) | Input | ต่อลง GND เลือก Left Channel |
+| Mic Power | 3.3V | INMP441 (VDD) | Power | **ห้ามต่อ 5V เด็ดขาด** |
+| Stepper IN1 | GPIO 9 | ULN2003 (IN1) | Output | Half-step coil drive |
+| Stepper IN2 | GPIO 10 | ULN2003 (IN2) | Output | Half-step coil drive |
+| Stepper IN3 | GPIO 11 | ULN2003 (IN3) | Output | Half-step coil drive |
+| Stepper IN4 | GPIO 12 | ULN2003 (IN4) | Output | Half-step coil drive |
+| Light Out | GPIO 13 | External Light Drive | Output | ไดรฟ์ไฟ 100mA (ผ่านทรานซิสเตอร์/MOSFET) |
+| Onboard LED | GPIO 48 | Onboard Red LED | Output | สว่างพร้อมไฟภายนอก |
+| Common GND | GND | Shared GND | Power | กราวด์ร่วม ESP32, ULN2003, Mic |
 
-## Electrical / Safety Notes
+---
 
-- **ไฟเลี้ยง INMP441:** รองรับแรงดัน 3.3V (1.8V - 3.3V) ห้ามจ่ายไฟ 5V เด็ดขาด อาจทำให้โมดูลเสียหายทันที
-- **USB CDC On Boot:** บอร์ด SuperMini อาศัย Native USB ของ ESP32-S3 ต้องเปิด `ARDUINO_USB_CDC_ON_BOOT=1` เสมอเพื่อให้ Serial Monitor ทำงานได้
-- **PSRAM Mode:** บอร์ด ESP32-S3 SuperMini Flash 4MB ส่วนใหญ่มาพร้อม PSRAM 2MB ชนิด QSPI (Quad SPI) ห้ามตั้งเป็น Octal (OPI) หากฮาร์ดแวร์ไม่รองรับ
+## BLE GATT Profile
 
-## Firmware Architecture
+- **Device Name:** `33rd-Anniversary`
+- **Service UUID:** `19b10000-e8f2-537e-4f6c-d104768a1214`
+- **Speed UUID:** `19b10001-e8f2-537e-4f6c-d104768a1214` (delay ms: 1 - 10)
+- **Threshold UUID:** `19b10002-e8f2-537e-4f6c-d104768a1214` (percentage: 50 - 99 -> 0.50 - 0.99)
+- **Volume UUID:** `19b10003-e8f2-537e-4f6c-d104768a1214` (volume: 0 - 30)
+- **State UUID:** `19b10004-e8f2-537e-4f6c-d104768a1214` (0: OFF, 1: ON + Notify)
 
-- **Framework:** Arduino under PlatformIO
-- **Audio Driver:** ESP32 I2S Standard Driver (`driver/i2s.h` หรือ `driver/i2s_std.h`)
-- **Sampling Rate:** 16,000 Hz, 32-bit (แปลงเป็น 16-bit PCM Mono)
-- **Signal Processing:** คำนวณ Root Mean Square (RMS) และ Peak Amplitude เพื่อวัดระดับความดังเสียง
+---
 
-## Libraries
+## Build & Deploy Instructions
 
-- **Arduino Core for ESP32** (Built-in I2S driver)
-
-## Build & Upload
-
+### ESP32-S3 Firmware (PlatformIO)
 ```bash
-# คอมไพล์โปรเจค
+# คอมไพล์
 pio run
 
-# อัปโหลดเฟิร์มแวร์ลงบอร์ด
+# อัปโหลดลงบอร์ด
 pio run -t upload
 
-# เปิด Serial Monitor ตรวจสอบค่า (Baud: 115200)
+# มอนิเตอร์ดู Log
 pio device monitor -b 115200
 ```
 
-## Current State
-
-- สถานะ: **Phase 3 Completed & Verified on Hardware!**
-- โมเดล "สามสิบสามปี" (`33_years`) พร้อมคลาส `unknown` และ `noise` ทำงานตรวจจับเสียงแบบ Continuous Audio ร่วมกับ `ESP_NN=1` บนบอร์ดจริงได้เสถียรโดยไม่รีสตาร์ท
-- ขนาดเฟิร์มแวร์ไบนารี: **935 KB** (Static RAM 32 KB + Dynamic PSRAM ~430 KB สำหรับ `tensor_arena` และ `shared_scratch_buffer`)
-- เอฟเฟกต์ไฟฉลอง: สว่างวิ่งเรียงลำดับ LED 1 -> 2 -> 3 และติดค้าง 5 วินาทีเมื่อตรวจพบคำว่า "สามสิบสามปี"
-
-## Open Questions
-
-- *All Resolved!*
-
-## Issue Log
-
-- **Bootloop from Partition Table Overflow:** บอร์ดเกิด Bootloop ซ้ำ ๆ ที่ Bootloader ด้วย error `partition 3 invalid - offset 0x340000 size 0x330000 exceeds flash chip size 0x400000` เกิดจาก Default partition table ของบอร์ด esp32-s3-devkitc-1 ถูกตั้งไว้สำหรับ 8MB Flash ซึ่งเกินขนาด 4MB Flash ของบอร์ด SuperMini
-  - **วิธีแก้:** สร้าง [partitions_4mb.csv](file:///c:/PROJECT/33th-annivasary/partitions_4mb.csv) และเพิ่ม `board_build.partitions = partitions_4mb.csv` ใน `platformio.ini` แล้วรัน `pio run -t erase` ก่อน `pio run -t upload`
-- **Edge Impulse EON Compiler + ESP-NN `StoreProhibited` & `CORRUPT HEAP: Bad tail`:**
-  - **สาเหตุ:**
-    1. `EI_MAX_OVERFLOW_BUFFER_COUNT` ใน `ei_classifier_porting.h` ตั้งไว้แค่ `30` ไม่พอสำหรับ 66 เลเยอร์ของโมเดล Transfer Learning
-    2. `esp_nn_depthwise_conv_s8_esp32s3.c` คำนวณขนาด Scratch Buffer น้อยกว่าที่ใช้จริงเมื่อแปลงเป็น 16-bit (`int16_t`)
-    3. `RequestScratchBufferInArenaImpl` ใน `tflite_learn_1164929_5_compiled.cpp` จองแยก 66 ก้อนและ `free` ทุก 250ms ทำให้เลเยอร์ที่เขียนเกินขอบไปทับ Tail Canary ของก้อนข้างๆ
-  - **วิธีแก้:**
-    1. เพิ่ม `EI_MAX_OVERFLOW_BUFFER_COUNT` เป็น `200`
-    2. จอง `shared_scratch_buffer` ก้อนเดียวขนาด 256 KB ใน PSRAM ให้ทุกเลเยอร์ใช้ร่วมกันใน `RequestScratchBufferInArenaImpl` และล็อก `tensor_arena` ค้างไว้ใน PSRAM ไม่ต้อง `free` ทุก 250ms
+### Web Frontend (Vite + React)
+```bash
+cd web
+pnpm install
+pnpm dev      # รันในเครื่องที่ http://localhost:5173
+pnpm build    # บิลด์สำหรับ Production (dist/)
+```
+- บน **Vercel**: ตั้งค่า Root Directory = `web` และปล่อยให้ตรวจจับ Vite Framework Preset อัตโนมัติ (ไม่ต้องสร้าง `vercel.json` ครอบ)
