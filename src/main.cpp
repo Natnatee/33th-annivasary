@@ -53,6 +53,23 @@ void ei_printf(const char *format, ...) {
   }
 }
 
+// Memory allocator overrides to seamlessly utilize 2MB PSRAM for Edge Impulse tensors
+void *ei_calloc(size_t nitems, size_t size) {
+  void *ptr = calloc(nitems, size);
+  if (!ptr && psramFound()) {
+    ptr = ps_calloc(nitems, size);
+  }
+  return ptr;
+}
+
+void *ei_malloc(size_t size) {
+  void *ptr = malloc(size);
+  if (!ptr && psramFound()) {
+    ptr = ps_malloc(size);
+  }
+  return ptr;
+}
+
 // Set all LEDs
 static void set_leds(bool state) {
   uint8_t val = state ? HIGH : LOW;

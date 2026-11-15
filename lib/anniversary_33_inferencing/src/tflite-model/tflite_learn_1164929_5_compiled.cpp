@@ -94,9 +94,9 @@ using namespace tflite::ops::micro;
 namespace {
 
 #if defined(EI_CLASSIFIER_ALLOCATION_STATIC_HIMAX) || defined(EI_CLASSIFIER_ALLOCATION_STATIC_HIMAX_GNU)
-constexpr int kTensorArenaSize = 174464;
+constexpr int kTensorArenaSize = 174464 + 65536;
 #else
-constexpr int kTensorArenaSize = 173440;
+constexpr int kTensorArenaSize = 173440 + 65536;
 #endif
 
 #if defined(EI_CLASSIFIER_ALLOCATION_STATIC)
