@@ -7,7 +7,8 @@
 ## Goals
 
 1. **Phase 1 (Completed):** ตรวจสอบฮาร์ดแวร์ บอร์ด ESP32-S3 SuperMini, ตรวจสอบการเปิดใช้งาน PSRAM (QSPI 2MB) และทดสอบอ่านค่าสัญญาณเสียงผ่าน I2S สำเร็จ
-2. **Phase 2 (ปัจจุบัน - Active):** ทดสอบโมเดล Wake Word สากล "MARVIN" ด้วย Edge Impulse Continuous Inference ควบคุม LED 3 หลอดภายนอก (GPIO 11, 12, 13) และ Onboard LED (GPIO 48)
+2. **Phase 2 (Completed):** ทดสอบโมเดล Wake Word สากล "MARVIN" ด้วย Edge Impulse Continuous Inference สำเร็จ
+3. **Phase 3 (Active):** Custom Wake Word ฉลองครบรอบแต่งงาน 33 ปี ตรวจจับเสียงคำว่า **"สามสิบสามปี"** (`33_years`) พร้อมคลาส `unknown` และ `noise` ป้องกันการลั่น ควบคุมไฟ LED 3 หลอดแบบเรียงลำดับ (Sequential Light-Up) ค้างไว้ 5 วินาที
 
 ## Hardware
 
@@ -62,10 +63,10 @@ pio device monitor -b 115200
 
 ## Current State
 
-- สถานะ: **Phase 2 Verified & Working!**
-- โมเดล Wake Word "MARVIN" (Edge Impulse Continuous Inference) รันบน ESP32-S3 SuperMini ได้อย่างราบรื่น
-- ขับสัญญาณควบคุม LED 3 หลอด (GPIO 11, 12, 13) และ Onboard LED (GPIO 48) ติดสว่าง 3 วินาทีเมื่อตรวจพบคำสั่งเสียงได้สำเร็จ
-- Hardware Verified: PSRAM 2MB QSPI ทำงานร่วมกับ DMA Audio Buffer ได้เสถียร ไม่พบอาการกระตุกหรือหน่วยความจำล้น
+- สถานะ: **Phase 3 Ready for Testing!**
+- โมเดล "สามสิบสามปี" (`33_years`) พร้อมคลาส `unknown` และ `noise` ติดตั้งเข้าโปรเจคและคอมไพล์สำเร็จสมบูรณ์ (`SUCCESS`)
+- ขนาดเฟิร์มแวร์ไบนารี: **933 KB** (ใช้พื้นที่เพียง ~45% ของ Partition แอป 2MB บน Flash 4MB)
+- เอฟเฟกต์ไฟฉลอง: สว่างวิ่งเรียงลำดับ LED 1 -> 2 -> 3 และติดค้าง 5 วินาทีเมื่อตรวจพบคำว่า "สามสิบสามปี"
 
 ## Open Questions
 

@@ -1,5 +1,5 @@
 #include <Arduino.h>
-#include <Marvin_WakeWord_inferencing.h>
+#include <anniversary_33_inferencing.h>
 #include <driver/i2s.h>
 
 // ==========================================
@@ -12,14 +12,14 @@ static const int PIN_I2S_WS  = 5;   // Word Select / LRCK
 static const int PIN_I2S_SCK = 6;   // Clock / BCLK
 
 // Output LED Pins (External 3 LEDs + Onboard Status LED)
-static const int PIN_LED_1   = 11;
-static const int PIN_LED_2   = 12;
-static const int PIN_LED_3   = 13;
+static const int PIN_LED_1   = 11;  // LED 1
+static const int PIN_LED_2   = 12;  // LED 2
+static const int PIN_LED_3   = 13;  // LED 3
 static const int PIN_LED_48  = 48;  // Onboard Red LED
 
 // Wake Word Threshold & Hold Duration
-static const float WAKE_WORD_THRESHOLD = 0.75f;
-static const unsigned long LED_ON_DURATION_MS = 3000;
+static const float WAKE_WORD_THRESHOLD = 0.70f;
+static const unsigned long LED_ON_DURATION_MS = 5000; // Hold for 5 seconds
 
 // ==========================================
 // Audio Inference Buffers & State
@@ -41,15 +41,45 @@ static volatile bool record_status = true;
 static unsigned long led_turn_off_time = 0;
 static bool leds_active = false;
 
-// Set LED states
+// Custom printf for Edge Impulse
+void ei_printf(const char *format, ...) {
+  static char print_buf[1024] = { 0 };
+  va_list args;
+  va_start(args, format);
+  int r = vsnprintf(print_buf, sizeof(print_buf), format, args);
+  va_end(args);
+  if (r > 0) {
+    Serial.write(print_buf);
+  }
+}
+
+// Set all LEDs
 static void set_leds(bool state) {
   uint8_t val = state ? HIGH : LOW;
   digitalWrite(PIN_LED_1, val);
   digitalWrite(PIN_LED_2, val);
   digitalWrite(PIN_LED_3, val);
-  // Onboard LED is active HIGH on SuperMini
   digitalWrite(PIN_LED_48, val);
   leds_active = state;
+}
+
+// Romantic lighting sequence when wake word triggers
+static void trigger_anniversary_lighting() {
+  Serial.println("\n********************************************************");
+  Serial.println("  >>> [SURPRISE!] ครบรอบ 33 ปี (33_years Detected!) <<< ");
+  Serial.println("  >>> Turning ON LEDs! Happy 33rd Anniversary! ❤️      ");
+  Serial.println("********************************************************\n");
+
+  // Step 1: Sequential light-up
+  digitalWrite(PIN_LED_1, HIGH);
+  delay(150);
+  digitalWrite(PIN_LED_2, HIGH);
+  delay(150);
+  digitalWrite(PIN_LED_3, HIGH);
+  digitalWrite(PIN_LED_48, HIGH);
+
+  leds_active = true;
+  led_turn_off_time = millis() + LED_ON_DURATION_MS;
 }
 
 // Push PCM samples into double-buffered inference queue
@@ -158,7 +188,6 @@ static bool microphone_inference_start(uint32_t n_samples) {
 // Wait until a slice of audio is ready
 static bool microphone_inference_record(void) {
   if (inference.buf_ready == 1) {
-    // Buffer overrun warning if model is slower than audio slice
     inference.buf_ready = 0;
   }
 
@@ -186,10 +215,13 @@ void setup() {
   pinMode(PIN_LED_48, OUTPUT);
   set_leds(false);
 
-  // Blink all LEDs once during startup as a self-test
-  set_leds(true);
-  delay(300);
-  set_leds(false);
+  // Startup LED Welcome Animation (Self-test)
+  for (int i = 0; i < 2; i++) {
+    set_leds(true);
+    delay(150);
+    set_leds(false);
+    delay(150);
+  }
 
   // Wait for USB CDC connection
   while (!Serial) {
@@ -197,17 +229,18 @@ void setup() {
   }
   delay(1000);
 
-  Serial.println("\n==============================================");
-  Serial.println("  ESP32-S3 SuperMini Wake Word: 'MARVIN'      ");
-  Serial.println("==============================================");
+  Serial.println("\n========================================================");
+  Serial.println("  ESP32-S3 SuperMini Wake Word: '33rd Anniversary' ❤️   ");
+  Serial.println("========================================================");
   Serial.printf("Chip Model       : %s\n", ESP.getChipModel());
   Serial.printf("PSRAM Available  : %.2f MB\n", ESP.getPsramSize() / (1024.0 * 1024.0));
   Serial.printf("Free PSRAM       : %d bytes\n", ESP.getFreePsram());
-  Serial.println("----------------------------------------------");
+  Serial.println("--------------------------------------------------------");
   Serial.println("Microphone (INMP441): SD=GPIO4, WS=GPIO5, SCK=GPIO6");
   Serial.println("LEDs                : GPIO 11, 12, 13 + Onboard LED 48");
-  Serial.println("Trigger Word        : 'MARVIN'");
-  Serial.println("==============================================\n");
+  Serial.println("Trigger Word        : 'สามสิบสามปี' (Label: 33_years)");
+  Serial.println("Classes             : 33_years, noise, unknown");
+  Serial.println("========================================================\n");
 
   run_classifier_init();
 
@@ -216,14 +249,14 @@ void setup() {
     return;
   }
 
-  Serial.println("[INFO] Continuous Listening started! Say 'MARVIN'...");
+  Serial.println("[INFO] Continuous Listening started! Speak 'สามสิบสามปี'...\n");
 }
 
 void loop() {
   // Turn off LEDs when duration expires
   if (leds_active && millis() >= led_turn_off_time) {
     set_leds(false);
-    Serial.println("[LED] LEDs turned OFF");
+    Serial.println("[LED] LEDs turned OFF. Waiting for next trigger...");
   }
 
   bool ok = microphone_inference_record();
@@ -245,14 +278,9 @@ void loop() {
     const char *label = result.classification[ix].label;
     float score = result.classification[ix].value;
 
-    if (strcmp(label, "marvin") == 0 && score >= WAKE_WORD_THRESHOLD) {
-      Serial.println("\n**********************************************");
-      Serial.printf(">>> [WAKE WORD DETECTED] Keyword: MARVIN (Score: %.2f)\n", score);
-      Serial.println(">>> Turning ON LEDs for 3 seconds!");
-      Serial.println("**********************************************\n");
-
-      set_leds(true);
-      led_turn_off_time = millis() + LED_ON_DURATION_MS;
+    if (strcmp(label, "33_years") == 0 && score >= WAKE_WORD_THRESHOLD) {
+      Serial.printf(">>> [DETECTED] '33_years' Confidence: %.2f (Threshold: %.2f)\n", score, WAKE_WORD_THRESHOLD);
+      trigger_anniversary_lighting();
     }
   }
 }
