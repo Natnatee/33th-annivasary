@@ -1,6 +1,8 @@
 #include <Arduino.h>
 #include <anniversary_33_inferencing.h>
 #include <driver/i2s.h>
+#include <Preferences.h>
+#include <NimBLEDevice.h>
 
 // ==========================================
 // Pin Configurations
@@ -11,15 +13,299 @@ static const int PIN_I2S_SD  = 4;   // Data Out from Mic
 static const int PIN_I2S_WS  = 5;   // Word Select / LRCK
 static const int PIN_I2S_SCK = 6;   // Clock / BCLK
 
-// Output LED Pins (External 3 LEDs + Onboard Status LED)
-static const int PIN_LED_1   = 11;  // LED 1
-static const int PIN_LED_2   = 12;  // LED 2
-static const int PIN_LED_3   = 13;  // LED 3
-static const int PIN_LED_48  = 48;  // Onboard Red LED
+// Stepper Motor ULN2003 Driver Pins
+static const int PIN_STEPPER_IN1 = 9;   // IN1 -> GPIO 9
+static const int PIN_STEPPER_IN2 = 10;  // IN2 -> GPIO 10
+static const int PIN_STEPPER_IN3 = 11;  // IN3 -> GPIO 11
+static const int PIN_STEPPER_IN4 = 12;  // IN4 -> GPIO 12
 
-// Wake Word Threshold & Hold Duration
-static const float WAKE_WORD_THRESHOLD = 0.70f;
-static const unsigned long LED_ON_DURATION_MS = 5000; // Hold for 5 seconds
+// Light Output Pins (External light on GPIO 13 + Onboard Red LED on GPIO 48)
+static const int PIN_LIGHT_EXT   = 13;
+static const int PIN_LIGHT_48    = 48;
+
+// ==========================================
+// BLE GATT Service & Characteristics UUIDs
+// ==========================================
+#define SERVICE_UUID        "19b10000-e8f2-537e-4f6c-d104768a1214"
+#define CHAR_SPEED_UUID     "19b10001-e8f2-537e-4f6c-d104768a1214"
+#define CHAR_THRESHOLD_UUID "19b10002-e8f2-537e-4f6c-d104768a1214"
+#define CHAR_VOLUME_UUID    "19b10003-e8f2-537e-4f6c-d104768a1214"
+#define CHAR_STATE_UUID     "19b10004-e8f2-537e-4f6c-d104768a1214"
+
+// Dynamic Parameters (Persistent via Preferences)
+static volatile uint32_t step_delay_ms = 3;            // Speed while spinning: default 3ms
+static volatile float wake_word_threshold = 0.80f;     // Default 0.80
+static volatile uint8_t df_volume = 20;                // Default 20 (0 - 30)
+
+static Preferences preferences;
+
+// BLE Server & Window (5 minutes on boot)
+static NimBLEServer* pServer = nullptr;
+static NimBLECharacteristic* pCharSpeed = nullptr;
+static NimBLECharacteristic* pCharThreshold = nullptr;
+static NimBLECharacteristic* pCharVolume = nullptr;
+static NimBLECharacteristic* pCharState = nullptr;
+
+static unsigned long ble_boot_time = 0;
+static const unsigned long BLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+static bool ble_active = false;
+static bool ble_client_connected = false;
+
+// ==========================================
+// Stepper Motor State & Half-Stepping (8-step)
+// ==========================================
+enum StepperState {
+  STEPPER_IDLE,
+  STEPPER_RUNNING,
+  STEPPER_RETURNING
+};
+
+static volatile StepperState stepper_state = STEPPER_IDLE;
+static volatile int32_t current_step_pos = 0;          // Position 0 .. 4095
+static const int32_t STEPS_PER_REV = 4096;             // 28BYJ-48 8-step half-stepping
+static const uint32_t RETURN_STEP_DELAY_MS = 2;        // Speed while returning to 0: 2ms
+static volatile bool system_active = false;
+static unsigned long wake_word_cooldown_until = 0;
+
+static const uint8_t STEP_SEQ[8][4] = {
+  {1, 0, 0, 0},
+  {1, 1, 0, 0},
+  {0, 1, 0, 0},
+  {0, 1, 1, 0},
+  {0, 0, 1, 0},
+  {0, 0, 1, 1},
+  {0, 0, 0, 1},
+  {1, 0, 0, 1}
+};
+
+static int8_t step_index = 0;
+
+static void set_stepper_pins(uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
+  digitalWrite(PIN_STEPPER_IN1, a ? HIGH : LOW);
+  digitalWrite(PIN_STEPPER_IN2, b ? HIGH : LOW);
+  digitalWrite(PIN_STEPPER_IN3, c ? HIGH : LOW);
+  digitalWrite(PIN_STEPPER_IN4, d ? HIGH : LOW);
+}
+
+static void stepper_stop_coils() {
+  set_stepper_pins(0, 0, 0, 0);
+}
+
+static void do_one_step(int dir) {
+  if (dir > 0) {
+    step_index = (step_index + 1) & 7;
+  } else {
+    step_index = (step_index - 1 + 8) & 7;
+  }
+  set_stepper_pins(STEP_SEQ[step_index][0],
+                   STEP_SEQ[step_index][1],
+                   STEP_SEQ[step_index][2],
+                   STEP_SEQ[step_index][3]);
+}
+
+// Light control
+static void set_light(bool state) {
+  uint8_t val = state ? HIGH : LOW;
+  digitalWrite(PIN_LIGHT_EXT, val);
+  digitalWrite(PIN_LIGHT_48, val);
+}
+
+// Notify Web BLE client of state change
+static void notify_ble_state(bool running) {
+  if (pCharState && ble_client_connected) {
+    uint8_t val = running ? 1 : 0;
+    pCharState->setValue(&val, 1);
+    pCharState->notify();
+  }
+}
+
+// Forward declaration of toggle function
+static void toggle_system(bool enable);
+
+// Stepper Motor Background Task running on Core 0
+static void stepper_motor_task(void *pvParameters) {
+  while (true) {
+    if (stepper_state == STEPPER_RUNNING) {
+      do_one_step(1); // Spin forward
+      current_step_pos = (current_step_pos + 1) % STEPS_PER_REV;
+      vTaskDelay(pdMS_TO_TICKS(step_delay_ms));
+    } else if (stepper_state == STEPPER_RETURNING) {
+      if (current_step_pos != 0) {
+        // Return to 0 via shortest direction
+        int dir = (current_step_pos <= (STEPS_PER_REV / 2)) ? -1 : 1;
+        do_one_step(dir);
+        current_step_pos = (current_step_pos + dir + STEPS_PER_REV) % STEPS_PER_REV;
+        vTaskDelay(pdMS_TO_TICKS(RETURN_STEP_DELAY_MS));
+      } else {
+        // Reached home position 0!
+        stepper_stop_coils();
+        stepper_state = STEPPER_IDLE;
+        set_light(false);
+        notify_ble_state(false);
+        Serial.println("\n[SYSTEM] Stepper returned to 0 (Home). Coils de-energized. Light turned OFF.\n");
+      }
+    } else {
+      stepper_stop_coils();
+      vTaskDelay(pdMS_TO_TICKS(20));
+    }
+  }
+}
+
+static void toggle_system(bool enable) {
+  if (enable) {
+    system_active = true;
+    set_light(true);
+    stepper_state = STEPPER_RUNNING;
+    notify_ble_state(true);
+    Serial.println("\n********************************************************");
+    Serial.println("  >>> [TOGGLE ON] Light ON & Stepper Motor SPINNING! ❤️  ");
+    Serial.println("********************************************************\n");
+  } else {
+    system_active = false;
+    stepper_state = STEPPER_RETURNING;
+    Serial.println("\n********************************************************");
+    Serial.println("  >>> [TOGGLE OFF] Stepper RETURNING to 0... Light OFF at 0!");
+    Serial.println("********************************************************\n");
+  }
+}
+
+// ==========================================
+// BLE Server & Characteristic Callbacks
+// ==========================================
+class ServerCallbacks : public NimBLEServerCallbacks {
+  void onConnect(NimBLEServer* pServer) override {
+    ble_client_connected = true;
+    Serial.println("\n[BLE] >>> Client Connected! <<<\n");
+  }
+
+  void onDisconnect(NimBLEServer* pServer) override {
+    ble_client_connected = false;
+    Serial.println("\n[BLE] Client Disconnected.");
+    // Restart advertising if still within 5 min window
+    if (ble_active) {
+      NimBLEDevice::startAdvertising();
+    }
+  }
+};
+
+class SpeedCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic* pCharacteristic) override {
+    std::string value = pCharacteristic->getValue();
+    if (!value.empty()) {
+      uint8_t val = (uint8_t)value[0];
+      if (val >= 1 && val <= 10) {
+        step_delay_ms = val;
+        preferences.begin("anniv33", false);
+        preferences.putUInt("speed", step_delay_ms);
+        preferences.end();
+        Serial.printf("[BLE] Updated Speed Delay: %u ms (Saved to Flash)\n", step_delay_ms);
+      }
+    }
+  }
+};
+
+class ThresholdCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic* pCharacteristic) override {
+    std::string value = pCharacteristic->getValue();
+    if (!value.empty()) {
+      uint8_t val = (uint8_t)value[0];
+      if (val >= 50 && val <= 99) {
+        wake_word_threshold = (float)val / 100.0f;
+        preferences.begin("anniv33", false);
+        preferences.putFloat("threshold", wake_word_threshold);
+        preferences.end();
+        Serial.printf("[BLE] Updated Threshold: %.2f (%u%%) (Saved to Flash)\n", wake_word_threshold, val);
+      }
+    }
+  }
+};
+
+class VolumeCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic* pCharacteristic) override {
+    std::string value = pCharacteristic->getValue();
+    if (!value.empty()) {
+      uint8_t val = (uint8_t)value[0];
+      if (val <= 30) {
+        df_volume = val;
+        preferences.begin("anniv33", false);
+        preferences.putUChar("volume", df_volume);
+        preferences.end();
+        Serial.printf("[BLE] Updated Volume: %u / 30 (Saved to Flash)\n", df_volume);
+      }
+    }
+  }
+};
+
+class StateCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic* pCharacteristic) override {
+    std::string value = pCharacteristic->getValue();
+    if (!value.empty()) {
+      uint8_t val = (uint8_t)value[0];
+      bool target_run = (val == 1);
+      if (target_run != system_active) {
+        toggle_system(target_run);
+      }
+    }
+  }
+};
+
+static void init_ble() {
+  Serial.println("[BLE] Initializing NimBLE Server: '33rd-Anniversary'...");
+  NimBLEDevice::init("33rd-Anniversary");
+  NimBLEDevice::setPower(ESP_PWR_LVL_P3); // Moderate power to keep cool & save energy
+
+  pServer = NimBLEDevice::createServer();
+  pServer->setCallbacks(new ServerCallbacks());
+
+  NimBLEService* pService = pServer->createService(SERVICE_UUID);
+
+  // Speed Characteristic
+  pCharSpeed = pService->createCharacteristic(
+    CHAR_SPEED_UUID,
+    NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE
+  );
+  uint8_t sVal = (uint8_t)step_delay_ms;
+  pCharSpeed->setValue(&sVal, 1);
+  pCharSpeed->setCallbacks(new SpeedCallbacks());
+
+  // Threshold Characteristic
+  pCharThreshold = pService->createCharacteristic(
+    CHAR_THRESHOLD_UUID,
+    NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE
+  );
+  uint8_t tVal = (uint8_t)(wake_word_threshold * 100);
+  pCharThreshold->setValue(&tVal, 1);
+  pCharThreshold->setCallbacks(new ThresholdCallbacks());
+
+  // Volume Characteristic
+  pCharVolume = pService->createCharacteristic(
+    CHAR_VOLUME_UUID,
+    NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE
+  );
+  uint8_t vVal = (uint8_t)df_volume;
+  pCharVolume->setValue(&vVal, 1);
+  pCharVolume->setCallbacks(new VolumeCallbacks());
+
+  // State Characteristic
+  pCharState = pService->createCharacteristic(
+    CHAR_STATE_UUID,
+    NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::NOTIFY
+  );
+  uint8_t stVal = system_active ? 1 : 0;
+  pCharState->setValue(&stVal, 1);
+  pCharState->setCallbacks(new StateCallbacks());
+
+  pService->start();
+
+  NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->setScanResponse(true);
+  pAdvertising->start();
+
+  ble_active = true;
+  ble_boot_time = millis();
+  Serial.println("[BLE] Advertising started! Available for 5 minutes after boot.\n");
+}
 
 // ==========================================
 // Audio Inference Buffers & State
@@ -38,9 +324,6 @@ static int32_t raw_i2s_buffer[SAMPLE_BUFFER_SIZE];
 static signed short sample_buffer[SAMPLE_BUFFER_SIZE];
 static volatile bool record_status = true;
 
-static unsigned long led_turn_off_time = 0;
-static bool leds_active = false;
-
 // Custom printf for Edge Impulse
 void ei_printf(const char *format, ...) {
   static char print_buf[1024] = { 0 };
@@ -51,37 +334,6 @@ void ei_printf(const char *format, ...) {
   if (r > 0) {
     Serial.write(print_buf);
   }
-}
-
-
-
-// Set all LEDs
-static void set_leds(bool state) {
-  uint8_t val = state ? HIGH : LOW;
-  digitalWrite(PIN_LED_1, val);
-  digitalWrite(PIN_LED_2, val);
-  digitalWrite(PIN_LED_3, val);
-  digitalWrite(PIN_LED_48, val);
-  leds_active = state;
-}
-
-// Romantic lighting sequence when wake word triggers
-static void trigger_anniversary_lighting() {
-  Serial.println("\n********************************************************");
-  Serial.println("  >>> [SURPRISE!] ครบรอบ 33 ปี (33_years Detected!) <<< ");
-  Serial.println("  >>> Turning ON LEDs! Happy 33rd Anniversary! ❤️      ");
-  Serial.println("********************************************************\n");
-
-  // Step 1: Sequential light-up
-  digitalWrite(PIN_LED_1, HIGH);
-  delay(150);
-  digitalWrite(PIN_LED_2, HIGH);
-  delay(150);
-  digitalWrite(PIN_LED_3, HIGH);
-  digitalWrite(PIN_LED_48, HIGH);
-
-  leds_active = true;
-  led_turn_off_time = millis() + LED_ON_DURATION_MS;
 }
 
 // Push PCM samples into double-buffered inference queue
@@ -213,23 +465,32 @@ static int microphone_audio_signal_get_data(size_t offset, size_t length, float 
 void setup() {
   Serial.begin(115200);
 
-  // Initialize LED Pins
-  pinMode(PIN_LED_1, OUTPUT);
-  pinMode(PIN_LED_2, OUTPUT);
-  pinMode(PIN_LED_3, OUTPUT);
-  pinMode(PIN_LED_48, OUTPUT);
-  set_leds(false);
+  // Initialize Stepper Pins
+  pinMode(PIN_STEPPER_IN1, OUTPUT);
+  pinMode(PIN_STEPPER_IN2, OUTPUT);
+  pinMode(PIN_STEPPER_IN3, OUTPUT);
+  pinMode(PIN_STEPPER_IN4, OUTPUT);
+  stepper_stop_coils();
 
-  // Startup LED Welcome Animation (Self-test)
-  for (int i = 0; i < 2; i++) {
-    set_leds(true);
-    delay(150);
-    set_leds(false);
-    delay(150);
-  }
+  // Initialize Light Pins
+  pinMode(PIN_LIGHT_EXT, OUTPUT);
+  pinMode(PIN_LIGHT_48, OUTPUT);
+  set_light(false);
+
+  // Startup Light Test
+  set_light(true);
+  delay(200);
+  set_light(false);
 
   // Don't block on USB CDC so the board runs standalone (power bank)
   delay(1500);
+
+  // Load saved preferences from Flash
+  preferences.begin("anniv33", true); // Read-only
+  step_delay_ms = preferences.getUInt("speed", 3);
+  wake_word_threshold = preferences.getFloat("threshold", 0.80f);
+  df_volume = preferences.getUChar("volume", 20);
+  preferences.end();
 
   Serial.println("\n========================================================");
   Serial.println("  ESP32-S3 SuperMini Wake Word: '33rd Anniversary' ❤️   ");
@@ -238,11 +499,23 @@ void setup() {
   Serial.printf("PSRAM Available  : %.2f MB\n", ESP.getPsramSize() / (1024.0 * 1024.0));
   Serial.printf("Free PSRAM       : %d bytes\n", ESP.getFreePsram());
   Serial.println("--------------------------------------------------------");
+  Serial.printf("Motor Speed Delay: %u ms (Loaded from Flash)\n", step_delay_ms);
+  Serial.printf("Wake Threshold   : %.2f (Loaded from Flash)\n", wake_word_threshold);
+  Serial.printf("DFPlayer Volume  : %u / 30 (Loaded from Flash)\n", df_volume);
+  Serial.println("--------------------------------------------------------");
   Serial.println("Microphone (INMP441): SD=GPIO4, WS=GPIO5, SCK=GPIO6");
-  Serial.println("LEDs                : GPIO 11, 12, 13 + Onboard LED 48");
+  Serial.println("Stepper (ULN2003)   : IN1=GPIO9, IN2=GPIO10, IN3=GPIO11, IN4=GPIO12");
+  Serial.println("Light Output        : GPIO 13 + Onboard Red LED 48");
   Serial.println("Trigger Word        : 'สามสิบสามปี' (Label: 33_years)");
-  Serial.println("Classes             : 33_years, noise, unknown");
+  Serial.println("Control Mode        : Speak to Toggle ON/OFF (Returns to 0 at OFF)");
+  Serial.println("Web BLE Service     : Active for 5 minutes on boot");
   Serial.println("========================================================\n");
+
+  // Launch Stepper Task on Core 0 (smooth, independent rotation)
+  xTaskCreatePinnedToCore(stepper_motor_task, "StepperTask", 2048, NULL, 5, NULL, 0);
+
+  // Initialize BLE Server (Runs on Core 0 background)
+  init_ble();
 
   run_classifier_init();
 
@@ -251,14 +524,18 @@ void setup() {
     return;
   }
 
-  Serial.println("[INFO] Continuous Listening started! Speak 'สามสิบสามปี'...\n");
+  Serial.println("[INFO] Continuous Listening started! Speak 'สามสิบสามปี' to Toggle...\n");
 }
 
 void loop() {
-  // Turn off LEDs when duration expires
-  if (leds_active && millis() >= led_turn_off_time) {
-    set_leds(false);
-    Serial.println("[LED] LEDs turned OFF. Waiting for next trigger...");
+  // Check 5-minute timeout for BLE Advertising (Auto-off if no client connected)
+  if (ble_active && !ble_client_connected) {
+    if (millis() - ble_boot_time > BLE_TIMEOUT_MS) {
+      Serial.println("\n[BLE] 5-minute config window expired without connection.");
+      Serial.println("[BLE] Shutting down BLE radio to save power & prevent RF interference.\n");
+      NimBLEDevice::deinit(true);
+      ble_active = false;
+    }
   }
 
   bool ok = microphone_inference_record();
@@ -275,7 +552,7 @@ void loop() {
     return;
   }
 
-  // ---- DEBUG: audio level of this slice ----
+  // Audio level of this slice
   int16_t *slice = inference.buffers[inference.buf_select ^ 1];
   int32_t peak = 0;
   for (uint32_t i = 0; i < EI_CLASSIFIER_SLICE_SIZE; i++) {
@@ -293,14 +570,20 @@ void loop() {
     else if (strcmp(label, "noise") == 0) snoise = score;
     else sunk = score;
 
-    if (strcmp(label, "33_years") == 0 && score >= WAKE_WORD_THRESHOLD) {
-      Serial.printf(">>> [DETECTED] '33_years' Confidence: %.2f (Threshold: %.2f)\n", score, WAKE_WORD_THRESHOLD);
-      trigger_anniversary_lighting();
+    if (strcmp(label, "33_years") == 0 && score >= wake_word_threshold) {
+      unsigned long now = millis();
+      if (now >= wake_word_cooldown_until) {
+        wake_word_cooldown_until = now + 2500; // 2.5s cooldown to prevent double toggle
+        toggle_system(!system_active);
+      }
     }
   }
 
   // Print every slice so we can see what the model thinks
-  Serial.printf("[%5lu] 33=%.2f noise=%.2f unk=%.2f | peak=%5ld | dsp=%dms nn=%dms | overrun=%lu\n",
+  Serial.printf("[%5lu] 33=%.2f noise=%.2f unk=%.2f | peak=%5ld | dsp=%dms nn=%dms | overrun=%lu | Sys=%s (MotorPos=%ld) | BLE=%s\n",
                 (unsigned long)dbg_count++, s33, snoise, sunk, (long)peak,
-                result.timing.dsp, result.timing.classification, (unsigned long)overrun_count);
+                result.timing.dsp, result.timing.classification, (unsigned long)overrun_count,
+                system_active ? "ON" : (stepper_state == STEPPER_RETURNING ? "RETURNING" : "OFF"),
+                (long)current_step_pos,
+                ble_active ? (ble_client_connected ? "Connected" : "Adv 5m") : "OFF");
 }
