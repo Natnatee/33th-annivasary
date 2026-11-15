@@ -2,35 +2,66 @@ import { useState, useEffect } from 'react';
 import { 
   Bluetooth, 
   BluetoothConnected, 
-  Volume2, 
-  RotateCw, 
-  Mic, 
   Power, 
-  Sparkles,
-  Clock,
-  CheckCircle2,
-  AlertCircle
+  Volume2, 
+  VolumeX, 
+  Mic, 
+  RotateCw,
+  Check
 } from 'lucide-react';
 import { bleService } from './ble';
 import type { DeviceConfig } from './ble';
+
+// Mapping tables for levels 1 to 5
+const THRESHOLD_LEVELS = [65, 72, 80, 86, 92]; // Index 0..4 -> Levels 1..5
+const VOLUME_LEVELS = [0, 6, 12, 18, 24, 30];   // 0 = Mute, 1..5
+
+function getSpeedLevel(delay: number): number {
+  const lvl = 6 - delay;
+  return Math.max(1, Math.min(5, lvl));
+}
+
+function getThresholdLevel(thresh: number): number {
+  let closestIdx = 0;
+  let minDiff = 999;
+  for (let i = 0; i < THRESHOLD_LEVELS.length; i++) {
+    const diff = Math.abs(THRESHOLD_LEVELS[i] - thresh);
+    if (diff < minDiff) {
+      minDiff = diff;
+      closestIdx = i;
+    }
+  }
+  return closestIdx + 1; // Level 1..5
+}
+
+function getVolumeLevel(vol: number): number {
+  if (vol === 0) return 0;
+  let closestIdx = 1;
+  let minDiff = 999;
+  for (let i = 1; i < VOLUME_LEVELS.length; i++) {
+    const diff = Math.abs(VOLUME_LEVELS[i] - vol);
+    if (diff < minDiff) {
+      minDiff = diff;
+      closestIdx = i;
+    }
+  }
+  return closestIdx;
+}
 
 export default function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
-  // Device settings
-  const [speed, setSpeed] = useState<number>(3);
-  const [threshold, setThreshold] = useState<number>(80);
-  const [volume, setVolume] = useState<number>(20);
+  // Simple 1-5 levels for elderly users
+  const [speedLevel, setSpeedLevel] = useState<number>(3);       // Level 1..5 (Default 3)
+  const [micLevel, setMicLevel] = useState<number>(3);           // Level 1..5 (Default 3)
+  const [volLevel, setVolLevel] = useState<number>(3);           // Level 0..5 (Default 3)
   const [isRunning, setIsRunning] = useState<boolean>(false);
 
   useEffect(() => {
     bleService.onDisconnectCallback = () => {
       setIsConnected(false);
-      setSuccessMsg(null);
-      setErrorMsg('การเชื่อมต่อบลูทูธสิ้นสุดลง');
     };
 
     bleService.onStateChangeCallback = (state) => {
@@ -42,18 +73,16 @@ export default function App() {
     try {
       setConnecting(true);
       setErrorMsg(null);
-      setSuccessMsg(null);
       const config: DeviceConfig = await bleService.connect();
-      setSpeed(config.speed);
-      setThreshold(config.threshold);
-      setVolume(config.volume);
+      setSpeedLevel(getSpeedLevel(config.speed));
+      setMicLevel(getThresholdLevel(config.threshold));
+      setVolLevel(getVolumeLevel(config.volume));
       setIsRunning(config.isRunning);
       setIsConnected(true);
-      setSuccessMsg('เชื่อมต่อสำเร็จ! ดึงข้อมูลจาก ESP32 เรียบร้อย');
     } catch (err: unknown) {
       const e = err as Error;
-      if (e.name !== 'NotFoundError') { // Don't show error if user just cancelled device picker
-        setErrorMsg(e.message || 'ไม่สามารถเชื่อมต่อบลูทูธได้');
+      if (e.name !== 'NotFoundError') {
+        setErrorMsg('ไม่พบอุปกรณ์ กรุณาเสียบปลั๊กกล่องใหม่แล้วกดเชื่อมต่อ');
       }
     } finally {
       setConnecting(false);
@@ -65,28 +94,31 @@ export default function App() {
     setIsConnected(false);
   };
 
-  const handleSpeedChange = async (newSpeed: number) => {
-    setSpeed(newSpeed);
+  const handleSelectSpeed = async (lvl: number) => {
+    setSpeedLevel(lvl);
+    const delay = 6 - lvl; // Level 1 -> 5ms (slow), Level 5 -> 1ms (fast)
     try {
-      await bleService.writeSpeed(newSpeed);
+      await bleService.writeSpeed(delay);
     } catch (e) {
       console.error(e);
     }
   };
 
-  const handleThresholdChange = async (newThresh: number) => {
-    setThreshold(newThresh);
+  const handleSelectMic = async (lvl: number) => {
+    setMicLevel(lvl);
+    const thresh = THRESHOLD_LEVELS[lvl - 1]; // Level 1 -> 65, Level 5 -> 92
     try {
-      await bleService.writeThreshold(newThresh);
+      await bleService.writeThreshold(thresh);
     } catch (e) {
       console.error(e);
     }
   };
 
-  const handleVolumeChange = async (newVol: number) => {
-    setVolume(newVol);
+  const handleSelectVolume = async (lvl: number) => {
+    setVolLevel(lvl);
+    const vol = VOLUME_LEVELS[lvl]; // Level 0 -> 0, Level 5 -> 30
     try {
-      await bleService.writeVolume(newVol);
+      await bleService.writeVolume(vol);
     } catch (e) {
       console.error(e);
     }
@@ -99,222 +131,195 @@ export default function App() {
       await bleService.writeState(nextState);
     } catch (e) {
       console.error(e);
-      setIsRunning(!nextState); // Rollback on error
+      setIsRunning(!nextState);
     }
   };
 
-  // 4096 steps per rev: 4096 * delay_ms / 1000 = seconds per rev
-  const secPerRev = ((4096 * speed) / 1000).toFixed(1);
-
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 text-slate-100 flex flex-col items-center p-4 sm:p-6">
-      {/* Header */}
-      <header className="w-full max-w-md text-center py-6">
-        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 text-xs font-medium mb-3">
-          <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-          <span>33rd Anniversary Interactive Gift</span>
-        </div>
-        <h1 className="text-2xl sm:text-33xl font-bold tracking-tight bg-gradient-to-r from-white via-indigo-100 to-indigo-300 bg-clip-text text-transparent">
-          กล่องดนตรี 33 ปี
+    <div className="min-h-screen bg-stone-100 text-stone-800 flex flex-col items-center justify-start p-4 sm:p-6 pb-12 select-none">
+      {/* Top Header */}
+      <header className="w-full max-w-md text-center pt-4 pb-4">
+        <h1 className="text-2xl sm:text-3xl font-extrabold text-stone-800 tracking-tight">
+          กล่องดนตรี 33 ปี ❤️
         </h1>
-        <p className="text-xs sm:text-sm text-slate-400 mt-1">
-          ตัวควบคุม & ปรับแต่งค่าผ่านระบบ Web Bluetooth
-        </p>
       </header>
 
       {/* Main Container */}
-      <main className="w-full max-w-md space-y-4">
-        {/* Connect Card */}
-        <div className="bg-slate-900/80 backdrop-blur-xl border border-slate-800 rounded-2xl p-5 shadow-2xl">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-3">
-              <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${isConnected ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-800 text-slate-400'}`}>
-                {isConnected ? <BluetoothConnected className="w-5 h-5 animate-pulse" /> : <Bluetooth className="w-5 h-5" />}
-              </div>
-              <div>
-                <h2 className="text-sm font-semibold text-white">สถานะการเชื่อมต่อ</h2>
-                <div className="flex items-center gap-1.5 mt-0.5">
-                  <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-400 animate-ping' : 'bg-slate-500'}`} />
-                  <span className={`text-xs ${isConnected ? 'text-emerald-400 font-medium' : 'text-slate-400'}`}>
-                    {isConnected ? 'เชื่อมต่อ ESP32 แล้ว' : 'ยังไม่ได้เชื่อมต่อ'}
-                  </span>
+      <main className="w-full max-w-md space-y-5">
+        
+        {/* Connect Button Card */}
+        <div className="bg-white rounded-3xl p-5 shadow-sm border border-stone-200">
+          {!isConnected ? (
+            <button
+              onClick={handleConnect}
+              disabled={connecting}
+              className="w-full py-5 px-6 rounded-2xl bg-amber-600 active:bg-amber-700 text-white font-bold text-xl shadow-md flex items-center justify-center gap-3 cursor-pointer transition-transform active:scale-[0.98] disabled:opacity-60"
+            >
+              {connecting ? (
+                <>
+                  <span className="w-6 h-6 border-3 border-white/30 border-t-white rounded-full animate-spin" />
+                  <span>กำลังค้นหา...</span>
+                </>
+              ) : (
+                <>
+                  <Bluetooth className="w-7 h-7" />
+                  <span>กดเชื่อมต่อ</span>
+                </>
+              )}
+            </button>
+          ) : (
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-2xl bg-emerald-100 text-emerald-700 flex items-center justify-center">
+                  <BluetoothConnected className="w-7 h-7" />
+                </div>
+                <div>
+                  <div className="text-lg font-bold text-emerald-700 flex items-center gap-1.5">
+                    <Check className="w-5 h-5 stroke-[3]" />
+                    <span>เชื่อมต่อแล้ว</span>
+                  </div>
+                  <p className="text-sm text-stone-500">พร้อมใช้งาน</p>
                 </div>
               </div>
-            </div>
 
-            {isConnected ? (
               <button
                 onClick={handleDisconnect}
-                className="px-3.5 py-1.5 rounded-xl text-xs font-medium bg-rose-500/10 text-rose-400 border border-rose-500/20 hover:bg-rose-500/20 transition-all cursor-pointer"
+                className="px-4 py-2.5 rounded-xl bg-stone-100 active:bg-stone-200 text-stone-600 font-medium text-sm cursor-pointer"
               >
-                ตัดการเชื่อมต่อ
+                เลิกเชื่อมต่อ
               </button>
-            ) : (
-              <button
-                onClick={handleConnect}
-                disabled={connecting}
-                className="px-4 py-2 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/30 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-              >
-                {connecting ? (
-                  <>
-                    <span className="w-3.5 h-3.5 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-                    <span>กำลังค้นหา...</span>
-                  </>
-                ) : (
-                  <>
-                    <Bluetooth className="w-4 h-4" />
-                    <span>เชื่อมต่อบลูทูธ</span>
-                  </>
-                )}
-              </button>
-            )}
-          </div>
+            </div>
+          )}
 
-          {/* Feedback messages */}
           {errorMsg && (
-            <div className="flex items-center gap-2 p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs mt-3">
-              <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
-              <span>{errorMsg}</span>
+            <div className="mt-3 p-3.5 rounded-xl bg-rose-50 text-rose-700 text-sm font-medium text-center">
+              {errorMsg}
             </div>
           )}
-          {successMsg && (
-            <div className="flex items-center gap-2 p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs mt-3">
-              <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
-              <span>{successMsg}</span>
-            </div>
-          )}
+        </div>
 
-          {/* Tip */}
-          <div className="mt-3 pt-3 border-t border-slate-800/80 flex items-start gap-2 text-[11px] text-slate-400">
-            <Clock className="w-3.5 h-3.5 shrink-0 text-indigo-400 mt-0.5" />
-            <span>
-              <strong>Tip:</strong> บลูทูธจะเปิดให้เชื่อมต่อเฉพาะช่วง <strong>5 นาทีแรกหลังเสียบปลั๊ก</strong> (ถ้าไม่พบอุปกรณ์ ให้ถอดปลั๊กเสียบใหม่)
-            </span>
+        {/* Big On/Off Toggle Button */}
+        <div className={`bg-white rounded-3xl p-6 shadow-sm border border-stone-200 transition-opacity duration-300 ${!isConnected ? 'opacity-40 pointer-events-none' : ''}`}>
+          <div className="text-center mb-4">
+            <span className="text-base font-bold text-stone-600">สวิตช์เปิด / ปิด</span>
+          </div>
+
+          <button
+            onClick={handleToggleState}
+            className={`w-full py-6 rounded-2xl font-bold text-2xl flex items-center justify-center gap-4 shadow-lg transition-all active:scale-[0.98] cursor-pointer ${
+              isRunning
+                ? 'bg-emerald-600 active:bg-emerald-700 text-white shadow-emerald-600/25 ring-4 ring-emerald-100'
+                : 'bg-stone-200 active:bg-stone-300 text-stone-700'
+            }`}
+          >
+            <Power className="w-8 h-8 stroke-[2.5]" />
+            <span>{isRunning ? 'กำลังเปิดทำงาน' : 'กดเพื่อเปิด'}</span>
+          </button>
+        </div>
+
+        {/* Setting 1: Speed (หมุนช้า - เร็ว) */}
+        <div className={`bg-white rounded-3xl p-5 shadow-sm border border-stone-200 space-y-3 transition-opacity duration-300 ${!isConnected ? 'opacity-40 pointer-events-none' : ''}`}>
+          <div className="flex items-center gap-2.5">
+            <RotateCw className="w-6 h-6 text-amber-600" />
+            <h2 className="text-lg font-bold text-stone-800">ความเร็วหมุน</h2>
+          </div>
+
+          {/* Level 1 to 5 Buttons */}
+          <div className="grid grid-cols-5 gap-2 pt-1">
+            {[1, 2, 3, 4, 5].map((lvl) => (
+              <button
+                key={lvl}
+                onClick={() => handleSelectSpeed(lvl)}
+                className={`py-3.5 rounded-2xl font-extrabold text-xl transition-all cursor-pointer ${
+                  speedLevel === lvl
+                    ? 'bg-amber-600 text-white shadow-md shadow-amber-600/30 scale-105'
+                    : 'bg-stone-100 active:bg-stone-200 text-stone-700'
+                }`}
+              >
+                {lvl}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex justify-between text-sm font-semibold text-stone-400 px-1 pt-0.5">
+            <span>🐢 ช้า</span>
+            <span>เร็ว 🐇</span>
           </div>
         </div>
 
-        {/* Remote Control / Manual Trigger */}
-        <div className={`bg-slate-900/80 backdrop-blur-xl border border-slate-800 rounded-2xl p-5 shadow-xl transition-opacity duration-300 ${!isConnected ? 'opacity-50 pointer-events-none' : ''}`}>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className={`w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${isRunning ? 'bg-amber-500/20 text-amber-400' : 'bg-slate-800 text-slate-400'}`}>
-                <Power className="w-5 h-5" />
-              </div>
-              <div>
-                <h3 className="text-sm font-semibold text-white">ทดสอบสั่งงาน (Manual Trigger)</h3>
-                <p className="text-xs text-slate-400">
-                  {isRunning ? 'กำลังทำงาน (มอเตอร์หมุน + ไฟติด)' : 'เครื่องหยุดนิ่ง (สแตนด์บาย)'}
-                </p>
-              </div>
-            </div>
+        {/* Setting 2: Mic Sensitivity (ติดง่าย - ติดยาก) */}
+        <div className={`bg-white rounded-3xl p-5 shadow-sm border border-stone-200 space-y-3 transition-opacity duration-300 ${!isConnected ? 'opacity-40 pointer-events-none' : ''}`}>
+          <div className="flex items-center gap-2.5">
+            <Mic className="w-6 h-6 text-rose-600" />
+            <h2 className="text-lg font-bold text-stone-800">เสียงเรียก "สามสิบสามปี"</h2>
+          </div>
 
+          {/* Level 1 to 5 Buttons */}
+          <div className="grid grid-cols-5 gap-2 pt-1">
+            {[1, 2, 3, 4, 5].map((lvl) => (
+              <button
+                key={lvl}
+                onClick={() => handleSelectMic(lvl)}
+                className={`py-3.5 rounded-2xl font-extrabold text-xl transition-all cursor-pointer ${
+                  micLevel === lvl
+                    ? 'bg-rose-600 text-white shadow-md shadow-rose-600/30 scale-105'
+                    : 'bg-stone-100 active:bg-stone-200 text-stone-700'
+                }`}
+              >
+                {lvl}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex justify-between text-sm font-semibold text-stone-400 px-1 pt-0.5">
+            <span>ติดง่าย</span>
+            <span>ติดยาก</span>
+          </div>
+        </div>
+
+        {/* Setting 3: Volume */}
+        <div className={`bg-white rounded-3xl p-5 shadow-sm border border-stone-200 space-y-3 transition-opacity duration-300 ${!isConnected ? 'opacity-40 pointer-events-none' : ''}`}>
+          <div className="flex items-center gap-2.5">
+            <Volume2 className="w-6 h-6 text-indigo-600" />
+            <h2 className="text-lg font-bold text-stone-800">ระดับเสียงเพลง</h2>
+          </div>
+
+          {/* Mute + Level 1 to 5 Buttons */}
+          <div className="grid grid-cols-6 gap-1.5 pt-1">
+            {/* Mute Button */}
             <button
-              onClick={handleToggleState}
-              className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all shadow-md cursor-pointer ${
-                isRunning 
-                  ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-rose-600/30' 
-                  : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-600/30'
+              onClick={() => handleSelectVolume(0)}
+              className={`py-3.5 rounded-2xl font-bold flex items-center justify-center transition-all cursor-pointer ${
+                volLevel === 0
+                  ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30 scale-105'
+                  : 'bg-stone-100 active:bg-stone-200 text-stone-500'
               }`}
+              title="ปิดเสียง"
             >
-              {isRunning ? 'สั่งปิด (กลับ 0°)' : 'สั่งเปิดทำงาน'}
+              <VolumeX className="w-5 h-5" />
             </button>
+
+            {[1, 2, 3, 4, 5].map((lvl) => (
+              <button
+                key={lvl}
+                onClick={() => handleSelectVolume(lvl)}
+                className={`py-3.5 rounded-2xl font-extrabold text-xl transition-all cursor-pointer ${
+                  volLevel === lvl
+                    ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30 scale-105'
+                    : 'bg-stone-100 active:bg-stone-200 text-stone-700'
+                }`}
+              >
+                {lvl}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex justify-between text-sm font-semibold text-stone-400 px-1 pt-0.5">
+            <span>ปิดเสียง / เบา</span>
+            <span>ดังสุด</span>
           </div>
         </div>
 
-        {/* Settings Sliders */}
-        <div className={`space-y-4 bg-slate-900/80 backdrop-blur-xl border border-slate-800 rounded-2xl p-5 shadow-xl transition-opacity duration-300 ${!isConnected ? 'opacity-50 pointer-events-none' : ''}`}>
-          <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-            <h3 className="text-sm font-semibold text-white">ปรับแต่งค่าพารามิเตอร์</h3>
-            <span className="text-[11px] text-slate-400">บันทึกอัตโนมัติลงชิป</span>
-          </div>
-
-          {/* Stepper Speed */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-slate-300 font-medium flex items-center gap-2">
-                <RotateCw className="w-4 h-4 text-indigo-400" />
-                ความเร็วมอเตอร์หมุนโมเดล
-              </span>
-              <span className="text-indigo-300 font-mono font-semibold">
-                {speed} ms (~{secPerRev} วินาที/รอบ)
-              </span>
-            </div>
-            <input
-              type="range"
-              min="1"
-              max="8"
-              step="1"
-              value={speed}
-              onChange={(e) => handleSpeedChange(Number(e.target.value))}
-              className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500"
-            />
-            <div className="flex justify-between text-[10px] text-slate-500">
-              <span>หมุนเร็ว (1ms ~4วิ)</span>
-              <span>ปกติ (3ms ~12วิ)</span>
-              <span>หมุนช้าเนิบๆ (8ms ~32วิ)</span>
-            </div>
-          </div>
-
-          {/* Wake Word Threshold */}
-          <div className="space-y-2 pt-2">
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-slate-300 font-medium flex items-center gap-2">
-                <Mic className="w-4 h-4 text-violet-400" />
-                ความไวตรวจจับคำพูด ("สามสิบสามปี")
-              </span>
-              <span className="text-violet-300 font-mono font-semibold">
-                {(threshold / 100).toFixed(2)} ({threshold}%)
-              </span>
-            </div>
-            <input
-              type="range"
-              min="50"
-              max="95"
-              step="1"
-              value={threshold}
-              onChange={(e) => handleThresholdChange(Number(e.target.value))}
-              className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-violet-500"
-            />
-            <div className="flex justify-between text-[10px] text-slate-500">
-              <span>ติดง่ายมาก (0.50)</span>
-              <span>แนะนำ (0.80)</span>
-              <span>ต้องพูดชัดเป๊ะ (0.95)</span>
-            </div>
-          </div>
-
-          {/* DFPlayer Volume */}
-          <div className="space-y-2 pt-2">
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-slate-300 font-medium flex items-center gap-2">
-                <Volume2 className="w-4 h-4 text-amber-400" />
-                ระดับเสียงเพลง (DFPlayer Mini)
-              </span>
-              <span className="text-amber-300 font-mono font-semibold">
-                {volume} / 30
-              </span>
-            </div>
-            <input
-              type="range"
-              min="0"
-              max="30"
-              step="1"
-              value={volume}
-              onChange={(e) => handleVolumeChange(Number(e.target.value))}
-              className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-500"
-            />
-            <div className="flex justify-between text-[10px] text-slate-500">
-              <span>ปิดเสียง (0)</span>
-              <span>ปานกลาง (15-20)</span>
-              <span>ดังสุด (30)</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Footer info */}
-        <footer className="text-center py-4 text-slate-500 text-xs space-y-1">
-          <p>ESP32-S3 BLE Service • Edge Impulse Wake Word</p>
-          <p className="text-[11px] text-slate-600">รองรับ Google Chrome & Microsoft Edge บน Android / PC / Mac</p>
-        </footer>
       </main>
     </div>
   );
