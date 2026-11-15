@@ -63,18 +63,24 @@ pio device monitor -b 115200
 
 ## Current State
 
-- สถานะ: **Phase 3 Ready for Testing!**
-- โมเดล "สามสิบสามปี" (`33_years`) พร้อมคลาส `unknown` และ `noise` ติดตั้งเข้าโปรเจคและคอมไพล์สำเร็จสมบูรณ์ (`SUCCESS`)
-- ขนาดเฟิร์มแวร์ไบนารี: **933 KB** (ใช้พื้นที่เพียง ~45% ของ Partition แอป 2MB บน Flash 4MB)
+- สถานะ: **Phase 3 Completed & Verified on Hardware!**
+- โมเดล "สามสิบสามปี" (`33_years`) พร้อมคลาส `unknown` และ `noise` ทำงานตรวจจับเสียงแบบ Continuous Audio ร่วมกับ `ESP_NN=1` บนบอร์ดจริงได้เสถียรโดยไม่รีสตาร์ท
+- ขนาดเฟิร์มแวร์ไบนารี: **935 KB** (Static RAM 32 KB + Dynamic PSRAM ~430 KB สำหรับ `tensor_arena` และ `shared_scratch_buffer`)
 - เอฟเฟกต์ไฟฉลอง: สว่างวิ่งเรียงลำดับ LED 1 -> 2 -> 3 และติดค้าง 5 วินาทีเมื่อตรวจพบคำว่า "สามสิบสามปี"
 
 ## Open Questions
 
-- *Resolved:* ยืนยัน Pinout และตำแหน่ง Onboard LED เรียบร้อย (Red LED / WS2812 RGB อยู่ที่ GPIO 48)
-- เลือกขากำหนดสำหรับต่อ LED 3 หลอดภายนอก (เสนอ GPIO 11, 12, 13 ฝั่งขวา หรือ GPIO 1, 2, 3 ฝั่งซ้าย)
-- กำหนดคำ Wake Word ที่ต้องการใช้ (คำไทย หรือคำสำเร็จรูปสากล)
+- *All Resolved!*
 
 ## Issue Log
 
 - **Bootloop from Partition Table Overflow:** บอร์ดเกิด Bootloop ซ้ำ ๆ ที่ Bootloader ด้วย error `partition 3 invalid - offset 0x340000 size 0x330000 exceeds flash chip size 0x400000` เกิดจาก Default partition table ของบอร์ด esp32-s3-devkitc-1 ถูกตั้งไว้สำหรับ 8MB Flash ซึ่งเกินขนาด 4MB Flash ของบอร์ด SuperMini
   - **วิธีแก้:** สร้าง [partitions_4mb.csv](file:///c:/PROJECT/33th-annivasary/partitions_4mb.csv) และเพิ่ม `board_build.partitions = partitions_4mb.csv` ใน `platformio.ini` แล้วรัน `pio run -t erase` ก่อน `pio run -t upload`
+- **Edge Impulse EON Compiler + ESP-NN `StoreProhibited` & `CORRUPT HEAP: Bad tail`:**
+  - **สาเหตุ:**
+    1. `EI_MAX_OVERFLOW_BUFFER_COUNT` ใน `ei_classifier_porting.h` ตั้งไว้แค่ `30` ไม่พอสำหรับ 66 เลเยอร์ของโมเดล Transfer Learning
+    2. `esp_nn_depthwise_conv_s8_esp32s3.c` คำนวณขนาด Scratch Buffer น้อยกว่าที่ใช้จริงเมื่อแปลงเป็น 16-bit (`int16_t`)
+    3. `RequestScratchBufferInArenaImpl` ใน `tflite_learn_1164929_5_compiled.cpp` จองแยก 66 ก้อนและ `free` ทุก 250ms ทำให้เลเยอร์ที่เขียนเกินขอบไปทับ Tail Canary ของก้อนข้างๆ
+  - **วิธีแก้:**
+    1. เพิ่ม `EI_MAX_OVERFLOW_BUFFER_COUNT` เป็น `200`
+    2. จอง `shared_scratch_buffer` ก้อนเดียวขนาด 256 KB ใน PSRAM ให้ทุกเลเยอร์ใช้ร่วมกันใน `RequestScratchBufferInArenaImpl` และล็อก `tensor_arena` ค้างไว้ใน PSRAM ไม่ต้อง `free` ทุก 250ms

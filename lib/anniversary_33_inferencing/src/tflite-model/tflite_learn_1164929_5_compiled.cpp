@@ -94,9 +94,9 @@ using namespace tflite::ops::micro;
 namespace {
 
 #if defined(EI_CLASSIFIER_ALLOCATION_STATIC_HIMAX) || defined(EI_CLASSIFIER_ALLOCATION_STATIC_HIMAX_GNU)
-constexpr int kTensorArenaSize = 174464 + 65536;
+constexpr int kTensorArenaSize = 174464 + 262144;
 #else
-constexpr int kTensorArenaSize = 173440 + 65536;
+constexpr int kTensorArenaSize = 173440 + 262144;
 #endif
 
 #if defined(EI_CLASSIFIER_ALLOCATION_STATIC)
@@ -5776,10 +5776,19 @@ static void init_tflite_eval_tensor(int i, TfLiteEvalTensor *tensor) {
 #endif // EI_CLASSIFIER_ALLOCATION_HEAP
 }
 
+#include <esp_heap_caps.h>
+#include <esp_timer.h>
+
 static void* overflow_buffers[EI_MAX_OVERFLOW_BUFFER_COUNT];
 static size_t overflow_buffers_ix = 0;
+static uint8_t* shared_scratch_buffer = nullptr;
+static constexpr size_t kSharedScratchSize = 262144; // 256 KB shared scratch buffer in PSRAM
+static size_t max_scratch_requested = 0;
+static bool first_run_debug = true;
+
 static void * AllocatePersistentBufferImpl(struct TfLiteContext* ctx,
                                        size_t bytes) {
+  bytes += 64;
   void *ptr;
   uint32_t align_bytes = (bytes % 16) ? 16 - (bytes % 16) : 0;
 
@@ -5792,7 +5801,7 @@ static void * AllocatePersistentBufferImpl(struct TfLiteContext* ctx,
 
     // OK, this will look super weird, but.... we have CMSIS-NN buffers which
     // we cannot calculate beforehand easily.
-    ptr = ei_calloc(bytes, 1);
+    ptr = ei_calloc(bytes + 64, 1);
     if (ptr == NULL) {
       ei_printf("ERR: Failed to allocate persistent buffer of size %d\n", (int)bytes);
       return NULL;
@@ -5829,15 +5838,26 @@ static TfLiteStatus RequestScratchBufferInArenaImpl(struct TfLiteContext* ctx, s
     return kTfLiteError;
   }
 
-  scratch_buffer_t b;
-  b.bytes = bytes;
+  if (!shared_scratch_buffer) {
+    shared_scratch_buffer = (uint8_t*)heap_caps_aligned_alloc(16, kSharedScratchSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!shared_scratch_buffer) {
+      ei_printf("ERR: Failed to allocate shared_scratch_buffer (%u bytes)\n", (unsigned)kSharedScratchSize);
+      return kTfLiteError;
+    }
+    memset(shared_scratch_buffer, 0, kSharedScratchSize);
+  }
 
-  b.ptr = AllocatePersistentBufferImpl(ctx, b.bytes);
-  if (!b.ptr) {
-    ei_printf("ERR: Failed to allocate scratch buffer of size %d\n",
-      (int)bytes);
+  if (bytes > max_scratch_requested) {
+    max_scratch_requested = bytes;
+  }
+  if (bytes > kSharedScratchSize - 1024) {
+    ei_printf("ERR: Scratch request %u exceeds shared buffer %u!\n", (unsigned)bytes, (unsigned)kSharedScratchSize);
     return kTfLiteError;
   }
+
+  scratch_buffer_t b;
+  b.bytes = bytes;
+  b.ptr = shared_scratch_buffer;
 
   scratch_buffers[scratch_buffers_ix] = b;
   *buffer_idx = scratch_buffers_ix;
@@ -5952,16 +5972,19 @@ class EonMicroContext : public MicroContext {
 
 TfLiteStatus tflite_learn_1164929_5_init( void*(*alloc_fnc)(size_t,size_t) ) {
 #ifdef EI_CLASSIFIER_ALLOCATION_HEAP
-  tensor_arena = (uint8_t*) alloc_fnc(16, kTensorArenaSize);
   if (!tensor_arena) {
-    ei_printf("ERR: failed to allocate tensor arena\n");
-    return kTfLiteError;
+    tensor_arena = (uint8_t*) heap_caps_aligned_alloc(16, kTensorArenaSize + 4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!tensor_arena) {
+      ei_printf("ERR: failed to allocate tensor arena\n");
+      return kTfLiteError;
+    }
   }
+  memset(tensor_arena, 0, kTensorArenaSize);
 #else
   memset(tensor_arena, 0, kTensorArenaSize);
 #endif
   tensor_boundary = tensor_arena;
-  current_location = tensor_arena + kTensorArenaSize;
+  current_location = tensor_arena + kTensorArenaSize - 64;
 
   EonMicroContext micro_context_;
   
@@ -6017,12 +6040,26 @@ TfLiteStatus tflite_learn_1164929_5_init( void*(*alloc_fnc)(size_t,size_t) ) {
         ResetTensors();
         TfLiteStatus status = registrations[used_ops[i]].prepare(&ctx, &tflNodes[i]);
         if (status != kTfLiteOk) {
+          ei_printf("[DBG ERR] Prepare failed at layer %u!\n", (unsigned)i);
           return status;
         }
       }
     }
   }
   current_subgraph_index = 0;
+
+  if (first_run_debug) {
+    ei_printf("[DBG STEP 1] init OK | arena_used=%d/%d | persistent_used=%d | scratch_cnt=%u (max_req=%u) | overflow_cnt=%u\n",
+      (int)(tensor_boundary - tensor_arena),
+      (int)kTensorArenaSize,
+      (int)((tensor_arena + kTensorArenaSize) - current_location),
+      (unsigned)scratch_buffers_ix,
+      (unsigned)max_scratch_requested,
+      (unsigned)overflow_buffers_ix);
+    if (!heap_caps_check_integrity_all(true)) {
+      ei_printf("[DBG ERR] Heap corrupted during STEP 1 (init)!\n");
+    }
+  }
 
   return kTfLiteOk;
 }
@@ -6103,16 +6140,24 @@ TfLiteStatus tflite_learn_1164929_5_invoke() {
 #endif // EI_CLASSIFIER_PRINT_STATE
 
     if (status != kTfLiteOk) {
+      ei_printf("[DBG ERR] Invoke failed at layer %u (op=%d)!\n", (unsigned)i, (int)used_ops[i]);
       return status;
     }
+
+    if (first_run_debug) {
+      if (!heap_caps_check_integrity_all(true)) {
+        ei_printf("[DBG ERR] HEAP CORRUPTED AT LAYER %u (op=%d)!\n", (unsigned)i, (int)used_ops[i]);
+      }
+    }
+  }
+  if (first_run_debug) {
+    ei_printf("[DBG STEP 2] invoke all 66 layers OK! Heap integrity PASS!\n");
   }
   return kTfLiteOk;
 }
 
 TfLiteStatus tflite_learn_1164929_5_reset( void (*free_fnc)(void* ptr) ) {
-#ifdef EI_CLASSIFIER_ALLOCATION_HEAP
-  free_fnc(tensor_arena);
-#endif
+  // Keep tensor_arena persistently in PSRAM instead of freeing every 250ms
 
   // scratch buffers are allocated within the arena, so just reset the counter so memory can be reused
   scratch_buffers_ix = 0;
@@ -6122,5 +6167,11 @@ TfLiteStatus tflite_learn_1164929_5_reset( void (*free_fnc)(void* ptr) ) {
     ei_free(overflow_buffers[ix]);
   }
   overflow_buffers_ix = 0;
+
+  if (first_run_debug) {
+    bool ok = heap_caps_check_integrity_all(true);
+    ei_printf("[DBG STEP 3] reset OK | heap_integrity=%s\n", ok ? "PASS" : "FAIL");
+    first_run_debug = false;
+  }
   return kTfLiteOk;
 }

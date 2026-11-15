@@ -377,7 +377,7 @@ int esp_nn_get_depthwise_conv_scratch_size_esp32s3(const data_dims_t *input_dims
     int pad_width = 0, pad_height = 0;
 
     if ((ch_mult == 1) && (channels % 8 == 0) && (filter_wd == 3) && (filter_ht == 3)) {
-        if (channels % 16 == 0) {
+        if ((channels % 16 == 0) && ((pad_wd == 1 && pad_ht == 1) || (pad_wd == 0 && pad_ht == 0))) {
             if (pad_wd || pad_ht) {
                 pad_width = pad_wd * 2;
                 pad_height = pad_ht * 2;
@@ -385,29 +385,22 @@ int esp_nn_get_depthwise_conv_scratch_size_esp32s3(const data_dims_t *input_dims
                 // check if we need to pad additionally
                 pad_width = (out_wd * stride_wd + filter_wd - 1) - input_wd;
                 pad_height = (out_ht * stride_ht + filter_ht - 1) - input_ht;
-                // printf("in(%d %d %d), out(%d %d), filter (%d %d) stride (%d %d), pad (%d %d)",
-                //         input_wd, input_ht, channels, out_wd, out_ht, filter_wd, filter_ht,
-                //         stride_wd, stride_ht, pad_wd, pad_ht);
             }
             if (pad_width || pad_height) {
                 int input_size = (input_wd + pad_width) * (input_ht + pad_height) * channels;
-                // printf("ask1 %d\n", filter_size + input_size + 16);
-                return filter_size + input_size + 16;  // 16 for alignment
+                return filter_size + input_size + 64;  // 64 for alignment & SIMD safety
             } else {
-                // printf("ask2 %d\n", filter_size + 16);
-                return filter_size + 16;  // 16 for alignment
+                return filter_size + 64;  // 64 for alignment & SIMD safety
             }
         } else {
             int input_size = input_wd * input_ht * channels;
-            // printf("ask3 %d\n", 2 * (filter_size + input_size) + 16);
-            return  2 * (filter_size + input_size) + 16; // 16 for alignment
+            return  2 * (filter_size + input_size) + 64; // 64 for int16 align_len * 2
         }
     } else if (ch_mult % 4 == 0) {
         int input_size = input_wd * input_ht * channels;
-        // printf("ask4 %d\n", 2 * (filter_size + input_size) + 16);
-        return  2 * (filter_size + input_size) + 16; // 16 for alignment
+        return  2 * (filter_size + input_size) + 64; // 64 for int16 align_len * 2
     }
-    return 32; // just few bytes
+    return 64; // just few bytes
 }
 
 void esp_nn_set_depthwise_conv_scratch_buf_esp32s3(void *buf)

@@ -12,7 +12,7 @@
 | Purpose | Library | Status | Notes |
 |---|---|---|---|
 | I2S Communication | ESP32 Built-in I2S Driver (`driver/i2s.h`) | Active | ไดรเวอร์มาตรฐานของ ESP-IDF/Arduino สำหรับการรับข้อมูลเสียงแบบ DMA |
-| Wake Word / TinyML | TBD (Edge Impulse / ESP-SR / microWakeWord) | Candidate | อยู่ระหว่างการพิจารณาเลือกใช้ใน Phase 2 |
+| Wake Word / TinyML | `anniversary_33_inferencing` (Edge Impulse EON + ESP-NN) | Active | โมเดล MFE + Transfer Learning (3 คลาส: `33_years`, `noise`, `unknown`) ปรับปรุง Shared PSRAM Scratch Buffer 256 KB |
 
 ## Datasheet / References
 

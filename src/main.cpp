@@ -53,22 +53,7 @@ void ei_printf(const char *format, ...) {
   }
 }
 
-// Memory allocator overrides to seamlessly utilize 2MB PSRAM for Edge Impulse tensors
-void *ei_calloc(size_t nitems, size_t size) {
-  void *ptr = calloc(nitems, size);
-  if (!ptr && psramFound()) {
-    ptr = ps_calloc(nitems, size);
-  }
-  return ptr;
-}
 
-void *ei_malloc(size_t size) {
-  void *ptr = malloc(size);
-  if (!ptr && psramFound()) {
-    ptr = ps_malloc(size);
-  }
-  return ptr;
-}
 
 // Set all LEDs
 static void set_leds(bool state) {
@@ -202,9 +187,12 @@ static bool microphone_inference_start(uint32_t n_samples) {
   return true;
 }
 
+static volatile uint32_t overrun_count = 0;
+
 // Wait until a slice of audio is ready
 static bool microphone_inference_record(void) {
   if (inference.buf_ready == 1) {
+    overrun_count++;  // inference slower than audio slice
     inference.buf_ready = 0;
   }
 
@@ -240,11 +228,8 @@ void setup() {
     delay(150);
   }
 
-  // Wait for USB CDC connection
-  while (!Serial) {
-    delay(10);
-  }
-  delay(1000);
+  // Don't block on USB CDC so the board runs standalone (power bank)
+  delay(1500);
 
   Serial.println("\n========================================================");
   Serial.println("  ESP32-S3 SuperMini Wake Word: '33rd Anniversary' ❤️   ");
@@ -290,14 +275,32 @@ void loop() {
     return;
   }
 
+  // ---- DEBUG: audio level of this slice ----
+  int16_t *slice = inference.buffers[inference.buf_select ^ 1];
+  int32_t peak = 0;
+  for (uint32_t i = 0; i < EI_CLASSIFIER_SLICE_SIZE; i++) {
+    int32_t a = abs(slice[i]);
+    if (a > peak) peak = a;
+  }
+
   // Check classifier predictions
+  static uint32_t dbg_count = 0;
+  float s33 = 0, snoise = 0, sunk = 0;
   for (size_t ix = 0; ix < EI_CLASSIFIER_LABEL_COUNT; ix++) {
     const char *label = result.classification[ix].label;
     float score = result.classification[ix].value;
+    if (strcmp(label, "33_years") == 0) s33 = score;
+    else if (strcmp(label, "noise") == 0) snoise = score;
+    else sunk = score;
 
     if (strcmp(label, "33_years") == 0 && score >= WAKE_WORD_THRESHOLD) {
       Serial.printf(">>> [DETECTED] '33_years' Confidence: %.2f (Threshold: %.2f)\n", score, WAKE_WORD_THRESHOLD);
       trigger_anniversary_lighting();
     }
   }
+
+  // Print every slice so we can see what the model thinks
+  Serial.printf("[%5lu] 33=%.2f noise=%.2f unk=%.2f | peak=%5ld | dsp=%dms nn=%dms | overrun=%lu\n",
+                (unsigned long)dbg_count++, s33, snoise, sunk, (long)peak,
+                result.timing.dsp, result.timing.classification, (unsigned long)overrun_count);
 }
