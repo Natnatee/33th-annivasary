@@ -24,6 +24,9 @@ static const int PIN_STEPPER_IN4 = 12;  // IN4 -> GPIO 12
 static const int PIN_LIGHT_EXT   = 13;
 static const int PIN_LIGHT_48    = 48;
 
+// Physical Push Button Pin (GPIO 8 to GND, internal PULLUP)
+static const int PIN_BUTTON      = 8;
+
 // DFPlayer Mini Pins (UART1)
 static const int PIN_DF_TX       = 1;   // ESP32 TX (GPIO 1) -> DFPlayer RX (via 1k resistor)
 static const int PIN_DF_RX       = 2;   // ESP32 RX (GPIO 2) <- DFPlayer TX
@@ -40,6 +43,8 @@ static unsigned long track_start_time = 0;
 static const int TOTAL_TRACKS = 7;
 static int playlist[TOTAL_TRACKS] = {1, 2, 3, 4, 5, 6, 7};
 static int playlist_index = 0;
+static int current_seq_track = 1;                      // In RAM: always starts at track 1 on reboot!
+static volatile uint8_t play_mode = 0;                 // 0 = Sequential (1..7), 1 = Random/Shuffle
 
 static void shuffle_playlist() {
   for (int i = TOTAL_TRACKS - 1; i > 0; i--) {
@@ -52,10 +57,21 @@ static void shuffle_playlist() {
 }
 
 static int get_next_track() {
-  if (playlist_index >= TOTAL_TRACKS) {
-    shuffle_playlist();
+  if (play_mode == 0) {
+    // Sequential: 1 -> 2 -> ... -> 7 -> 1
+    int track = current_seq_track;
+    current_seq_track++;
+    if (current_seq_track > TOTAL_TRACKS) {
+      current_seq_track = 1;
+    }
+    return track;
+  } else {
+    // Random / Shuffle
+    if (playlist_index >= TOTAL_TRACKS) {
+      shuffle_playlist();
+    }
+    return playlist[playlist_index++];
   }
-  return playlist[playlist_index++];
 }
 
 // ==========================================
@@ -66,6 +82,7 @@ static int get_next_track() {
 #define CHAR_THRESHOLD_UUID "19b10002-e8f2-537e-4f6c-d104768a1214"
 #define CHAR_VOLUME_UUID    "19b10003-e8f2-537e-4f6c-d104768a1214"
 #define CHAR_STATE_UUID     "19b10004-e8f2-537e-4f6c-d104768a1214"
+#define CHAR_PLAYMODE_UUID  "19b10005-e8f2-537e-4f6c-d104768a1214"
 
 // Dynamic Parameters (Persistent via Preferences)
 static volatile uint32_t step_delay_ms = 3;            // Speed while spinning: default 3ms (0 = disabled)
@@ -80,6 +97,7 @@ static NimBLECharacteristic* pCharSpeed = nullptr;
 static NimBLECharacteristic* pCharThreshold = nullptr;
 static NimBLECharacteristic* pCharVolume = nullptr;
 static NimBLECharacteristic* pCharState = nullptr;
+static NimBLECharacteristic* pCharPlayMode = nullptr;
 
 static unsigned long ble_boot_time = 0;
 static const unsigned long BLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
@@ -208,7 +226,8 @@ static void toggle_system(bool enable) {
 
     notify_ble_state(true);
     Serial.println("\n********************************************************");
-    Serial.printf("  >>> [TOGGLE ON] Playing Track #%d | Light ON & Motor Active! ❤️\n", track);
+    Serial.printf("  >>> [TOGGLE ON] Playing Track #%d (%s) | Light ON & Motor Active! ❤️\n",
+                  track, play_mode == 0 ? "Sequential" : "Shuffle");
     Serial.println("********************************************************\n");
   } else {
     system_active = false;
@@ -308,6 +327,20 @@ class StateCallbacks : public NimBLECharacteristicCallbacks {
   }
 };
 
+class PlayModeCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic* pCharacteristic) override {
+    std::string value = pCharacteristic->getValue();
+    if (!value.empty()) {
+      uint8_t val = (uint8_t)value[0];
+      play_mode = (val == 1) ? 1 : 0;
+      preferences.begin("anniv33", false);
+      preferences.putUChar("play_mode", play_mode);
+      preferences.end();
+      Serial.printf("[BLE] Updated Play Mode: %s (Saved to Flash)\n", play_mode == 0 ? "Sequential (1-7)" : "Random (Shuffle)");
+    }
+  }
+};
+
 static void init_ble() {
   Serial.println("[BLE] Initializing NimBLE Server: '33rd-Anniversary'...");
   NimBLEDevice::init("33rd-Anniversary");
@@ -353,6 +386,15 @@ static void init_ble() {
   uint8_t stVal = system_active ? 1 : 0;
   pCharState->setValue(&stVal, 1);
   pCharState->setCallbacks(new StateCallbacks());
+
+  // Play Mode Characteristic
+  pCharPlayMode = pService->createCharacteristic(
+    CHAR_PLAYMODE_UUID,
+    NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE
+  );
+  uint8_t pmVal = play_mode;
+  pCharPlayMode->setValue(&pmVal, 1);
+  pCharPlayMode->setCallbacks(new PlayModeCallbacks());
 
   pService->start();
 
@@ -536,18 +578,28 @@ void setup() {
   pinMode(PIN_LIGHT_48, OUTPUT);
   set_light(false);
 
+  // Initialize Physical Push Button Pin (GPIO 8, active LOW)
+  pinMode(PIN_BUTTON, INPUT_PULLUP);
+
+  // Startup Welcome Light Blink (200ms) - Quiet & Polite
+  set_light(true);
+  delay(200);
+  set_light(false);
+
   // Don't block on USB CDC so the board runs standalone (power bank)
   delay(1200);
 
   // Seed random generator
   randomSeed(micros());
   shuffle_playlist();
+  current_seq_track = 1; // Always starts at track 1 on boot
 
   // Load saved preferences from Flash
   preferences.begin("anniv33", true); // Read-only
   step_delay_ms = preferences.getUInt("speed", 3);
   wake_word_threshold = preferences.getFloat("threshold", 0.80f);
   df_volume = preferences.getUChar("volume", 20);
+  play_mode = preferences.getUChar("play_mode", 0); // 0 = Sequential, 1 = Random
   preferences.end();
 
   // Initialize DFPlayer Mini (UART1 on GPIO 2 RX, GPIO 1 TX)
@@ -578,9 +630,11 @@ void setup() {
   Serial.printf("Motor Speed Delay: %u ms (Loaded from Flash)\n", step_delay_ms);
   Serial.printf("Wake Threshold   : %.2f (Loaded from Flash)\n", wake_word_threshold);
   Serial.printf("DFPlayer Volume  : %u / 30 (Loaded from Flash)\n", df_volume);
+  Serial.printf("Music Play Mode  : %s (Loaded from Flash)\n", play_mode == 0 ? "Sequential (1-7)" : "Random (Shuffle)");
   Serial.println("--------------------------------------------------------");
   Serial.println("Microphone (INMP441): SD=GPIO4, WS=GPIO5, SCK=GPIO6");
   Serial.println("Stepper (ULN2003)   : IN1=GPIO9, IN2=GPIO10, IN3=GPIO11, IN4=GPIO12");
+  Serial.println("Push Button (GND)   : GPIO 8 (Short: Trigger/Next | Long 1.5s: Stop)");
   Serial.println("DFPlayer Mini (UART): TX=GPIO1 (to RX via 1k), RX=GPIO2 (from TX), BUSY=GPIO3");
   Serial.println("Light Output        : GPIO 13 + Onboard Red LED 48");
   Serial.println("Trigger Word        : 'สามสิบสามปี' (Label: 33_years)");
@@ -589,39 +643,6 @@ void setup() {
 
   // Launch Stepper Task on Core 0 (smooth, independent rotation)
   xTaskCreatePinnedToCore(stepper_motor_task, "StepperTask", 2048, NULL, 5, NULL, 0);
-
-  // ----------------------------------------------------
-  // Power-On Self-Test (POST): 10-Second Test on Boot
-  // 1. Play Track 1
-  // 2. Turn ON Light
-  // 3. Spin Stepper Motor
-  // 4. After 10s: Stop music, return stepper to 0°, turn off light
-  // ----------------------------------------------------
-  Serial.println(">>> [SELF-TEST] 10-Second Power-On Self-Test Starting...");
-  set_light(true);
-  if (dfplayer_ready) {
-    myDFPlayer.play(1); // Play track 1
-  }
-  if (step_delay_ms > 0) {
-    stepper_state = STEPPER_RUNNING;
-  }
-
-  unsigned long self_test_start = millis();
-  while (millis() - self_test_start < 10000) {
-    delay(50);
-  }
-
-  Serial.println(">>> [SELF-TEST] 10s Finished. Stopping music & returning stepper to Home 0°...");
-  if (dfplayer_ready) {
-    myDFPlayer.stop();
-  }
-  stepper_state = STEPPER_RETURNING;
-
-  // Wait until stepper reaches 0 (Home)
-  while (stepper_state == STEPPER_RETURNING) {
-    delay(20);
-  }
-  Serial.println(">>> [SELF-TEST] Self-Test Completed! Stepper at 0°, Lights OFF, Ready.\n");
 
   // Initialize BLE Server (Runs on Core 0 background)
   init_ble();
@@ -633,7 +654,7 @@ void setup() {
     return;
   }
 
-  Serial.println("[INFO] Continuous Listening started! Speak 'สามสิบสามปี' to Toggle...\n");
+  Serial.println("[INFO] Standby ready! Speak 'สามสิบสามปี' or press Button to start...\n");
 }
 
 void loop() {
@@ -646,6 +667,48 @@ void loop() {
       ble_active = false;
     }
   }
+
+  // ----------------------------------------------------
+  // Physical Push Button on GPIO 8 (Active LOW)
+  // Short Click (< 1.5s) : Toggle ON or Next Track
+  // Long Press  (>= 1.5s): Force STOP & Return to 0°
+  // ----------------------------------------------------
+  static bool last_btn_state = HIGH;
+  static unsigned long btn_press_time = 0;
+  static bool long_press_handled = false;
+
+  bool current_btn_state = digitalRead(PIN_BUTTON);
+  if (last_btn_state == HIGH && current_btn_state == LOW) {
+    // Just pressed
+    btn_press_time = millis();
+    long_press_handled = false;
+  } else if (current_btn_state == LOW) {
+    // Being held down
+    if (!long_press_handled && (millis() - btn_press_time >= 1500)) {
+      long_press_handled = true;
+      Serial.println("\n>>> [BUTTON] Long press (1.5s) -> Force STOP!");
+      if (system_active) {
+        toggle_system(false);
+      }
+    }
+  } else if (last_btn_state == LOW && current_btn_state == HIGH) {
+    // Released
+    if (!long_press_handled && (millis() - btn_press_time >= 50)) {
+      Serial.println("\n>>> [BUTTON] Short press -> Trigger / Next Track!");
+      if (!system_active) {
+        toggle_system(true);
+      } else {
+        int track = get_next_track();
+        if (dfplayer_ready) {
+          myDFPlayer.play(track);
+          track_start_time = millis();
+        }
+        Serial.printf("\n>>> [NEXT TRACK] Button clicked -> Playing Track #%d (%s)\n",
+                      track, play_mode == 0 ? "Sequential" : "Shuffle");
+      }
+    }
+  }
+  last_btn_state = current_btn_state;
 
   // Auto-stop when song finishes playing
   if (system_active && dfplayer_ready) {
@@ -694,16 +757,17 @@ void loop() {
         wake_word_cooldown_until = now + 2500; // 2.5s cooldown
 
         if (!system_active) {
-          // System was OFF -> Turn ON & play random track
+          // System was OFF -> Turn ON
           toggle_system(true);
         } else {
-          // Already playing -> Skip to next random track!
+          // Already playing -> Skip to next track!
           int track = get_next_track();
           if (dfplayer_ready) {
             myDFPlayer.play(track);
             track_start_time = millis();
           }
-          Serial.printf("\n>>> [NEXT TRACK] '33_years' Detected while playing -> Skipping to Track #%d\n", track);
+          Serial.printf("\n>>> [NEXT TRACK] '33_years' Detected -> Skipping to Track #%d (%s)\n",
+                        track, play_mode == 0 ? "Sequential" : "Shuffle");
         }
       }
     }

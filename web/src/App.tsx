@@ -8,7 +8,10 @@ import {
   Mic, 
   RotateCw,
   Pause,
-  Check
+  Check,
+  Repeat,
+  Shuffle,
+  Music
 } from 'lucide-react';
 import { bleService } from './ble';
 import type { DeviceConfig } from './ble';
@@ -55,10 +58,11 @@ export default function App() {
   const [connecting, setConnecting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // Simple 1-5 levels for elderly users
-  const [speedLevel, setSpeedLevel] = useState<number>(3);       // Level 1..5 (Default 3)
+  // Simple levels for elderly users
+  const [speedLevel, setSpeedLevel] = useState<number>(3);       // Level 0..5 (Default 3)
   const [micLevel, setMicLevel] = useState<number>(3);           // Level 1..5 (Default 3)
   const [volLevel, setVolLevel] = useState<number>(3);           // Level 0..5 (Default 3)
+  const [playMode, setPlayMode] = useState<number>(0);           // 0 = Sequential, 1 = Random
   const [isRunning, setIsRunning] = useState<boolean>(false);
 
   useEffect(() => {
@@ -79,6 +83,7 @@ export default function App() {
       setSpeedLevel(getSpeedLevel(config.speed));
       setMicLevel(getThresholdLevel(config.threshold));
       setVolLevel(getVolumeLevel(config.volume));
+      setPlayMode(config.playMode || 0);
       setIsRunning(config.isRunning);
       setIsConnected(true);
     } catch (err: unknown) {
@@ -121,6 +126,15 @@ export default function App() {
     const vol = VOLUME_LEVELS[lvl]; // Level 0 -> 0, Level 5 -> 30
     try {
       await bleService.writeVolume(vol);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleSelectPlayMode = async (mode: number) => {
+    setPlayMode(mode);
+    try {
+      await bleService.writePlayMode(mode);
     } catch (e) {
       console.error(e);
     }
@@ -262,7 +276,41 @@ export default function App() {
           </div>
         </div>
 
-        {/* Setting 2: Mic Sensitivity (ติดง่าย - ติดยาก) */}
+        {/* Setting 2: Play Mode (เล่นเรียง 🔁 vs สุ่มเพลง 🔀) */}
+        <div className={`bg-white rounded-3xl p-5 shadow-sm border border-stone-200 space-y-3 transition-opacity duration-300 ${!isConnected ? 'opacity-40 pointer-events-none' : ''}`}>
+          <div className="flex items-center gap-2.5">
+            <Music className="w-6 h-6 text-teal-600" />
+            <h2 className="text-lg font-bold text-stone-800">โหมดเล่นเพลง</h2>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 pt-1">
+            <button
+              onClick={() => handleSelectPlayMode(0)}
+              className={`py-4 px-3 rounded-2xl font-bold text-base flex flex-col items-center justify-center gap-2 transition-all cursor-pointer ${
+                playMode === 0
+                  ? 'bg-teal-600 text-white shadow-md shadow-teal-600/30 scale-102 ring-2 ring-teal-200'
+                  : 'bg-stone-100 active:bg-stone-200 text-stone-700'
+              }`}
+            >
+              <Repeat className="w-7 h-7 stroke-[2.5]" />
+              <span>เล่นเรียง (1 ➡️ 7)</span>
+            </button>
+
+            <button
+              onClick={() => handleSelectPlayMode(1)}
+              className={`py-4 px-3 rounded-2xl font-bold text-base flex flex-col items-center justify-center gap-2 transition-all cursor-pointer ${
+                playMode === 1
+                  ? 'bg-teal-600 text-white shadow-md shadow-teal-600/30 scale-102 ring-2 ring-teal-200'
+                  : 'bg-stone-100 active:bg-stone-200 text-stone-700'
+              }`}
+            >
+              <Shuffle className="w-7 h-7 stroke-[2.5]" />
+              <span>สุ่มเพลง</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Setting 3: Mic Sensitivity (ติดง่าย - ติดยาก) */}
         <div className={`bg-white rounded-3xl p-5 shadow-sm border border-stone-200 space-y-3 transition-opacity duration-300 ${!isConnected ? 'opacity-40 pointer-events-none' : ''}`}>
           <div className="flex items-center gap-2.5">
             <Mic className="w-6 h-6 text-rose-600" />
@@ -292,7 +340,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* Setting 3: Volume */}
+        {/* Setting 4: Volume */}
         <div className={`bg-white rounded-3xl p-5 shadow-sm border border-stone-200 space-y-3 transition-opacity duration-300 ${!isConnected ? 'opacity-40 pointer-events-none' : ''}`}>
           <div className="flex items-center gap-2.5">
             <Volume2 className="w-6 h-6 text-indigo-600" />

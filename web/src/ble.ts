@@ -4,12 +4,14 @@ export const CHAR_SPEED_UUID = '19b10001-e8f2-537e-4f6c-d104768a1214';
 export const CHAR_THRESHOLD_UUID = '19b10002-e8f2-537e-4f6c-d104768a1214';
 export const CHAR_VOLUME_UUID = '19b10003-e8f2-537e-4f6c-d104768a1214';
 export const CHAR_STATE_UUID = '19b10004-e8f2-537e-4f6c-d104768a1214';
+export const CHAR_PLAYMODE_UUID = '19b10005-e8f2-537e-4f6c-d104768a1214';
 
 export interface DeviceConfig {
-  speed: number;       // Step delay ms (1 - 10)
+  speed: number;       // Step delay ms (0 = stop, 1 - 10)
   threshold: number;   // Percentage (50 - 99) -> 0.50 - 0.99
   volume: number;      // 0 - 30
   isRunning: boolean;  // 0 or 1
+  playMode: number;    // 0 = Sequential, 1 = Random/Shuffle
 }
 
 export class BLEService {
@@ -19,6 +21,7 @@ export class BLEService {
   private charThreshold: BluetoothRemoteGATTCharacteristic | null = null;
   private charVolume: BluetoothRemoteGATTCharacteristic | null = null;
   private charState: BluetoothRemoteGATTCharacteristic | null = null;
+  private charPlayMode: BluetoothRemoteGATTCharacteristic | null = null;
 
   public onDisconnectCallback: (() => void) | null = null;
   public onStateChangeCallback: ((isRunning: boolean) => void) | null = null;
@@ -56,6 +59,14 @@ export class BLEService {
     this.charVolume = await service.getCharacteristic(CHAR_VOLUME_UUID);
     this.charState = await service.getCharacteristic(CHAR_STATE_UUID);
 
+    let playModeVal = 0;
+    try {
+      this.charPlayMode = await service.getCharacteristic(CHAR_PLAYMODE_UUID);
+      playModeVal = (await this.charPlayMode.readValue()).getUint8(0);
+    } catch {
+      this.charPlayMode = null;
+    }
+
     // Read initial values
     const speedVal = (await this.charSpeed.readValue()).getUint8(0);
     const threshVal = (await this.charThreshold.readValue()).getUint8(0);
@@ -77,6 +88,7 @@ export class BLEService {
       threshold: threshVal || 80,
       volume: volVal !== undefined ? volVal : 20,
       isRunning: stateVal === 1,
+      playMode: playModeVal || 0,
     };
   }
 
@@ -104,6 +116,12 @@ export class BLEService {
     await this.charState.writeValue(data);
   }
 
+  async writePlayMode(mode: number): Promise<void> {
+    if (!this.charPlayMode) return;
+    const data = new Uint8Array([mode === 1 ? 1 : 0]);
+    await this.charPlayMode.writeValue(data);
+  }
+
   disconnect(): void {
     if (this.device && this.device.gatt?.connected) {
       this.device.gatt.disconnect();
@@ -118,6 +136,7 @@ export class BLEService {
     this.charThreshold = null;
     this.charVolume = null;
     this.charState = null;
+    this.charPlayMode = null;
   }
 }
 
