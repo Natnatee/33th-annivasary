@@ -40,14 +40,19 @@ DFRobotDFPlayerMini myDFPlayer;
 static bool dfplayer_ready = false;
 static unsigned long track_start_time = 0;
 
-static const int TOTAL_TRACKS = 7;
-static int playlist[TOTAL_TRACKS] = {1, 2, 3, 4, 5, 6, 7};
+static const int MAX_TRACKS = 250;                     // Support up to 250 songs!
+static int total_tracks = 7;                            // Auto-detected on boot from SD card (default 7)
+static int playlist[MAX_TRACKS];
 static int playlist_index = 0;
 static int current_seq_track = 1;                      // In RAM: always starts at track 1 on reboot!
-static volatile uint8_t play_mode = 0;                 // 0 = Sequential (1..7), 1 = Random/Shuffle
+static volatile uint8_t play_mode = 0;                 // 0 = Sequential (1..total_tracks), 1 = Random/Shuffle
 
 static void shuffle_playlist() {
-  for (int i = TOTAL_TRACKS - 1; i > 0; i--) {
+  if (total_tracks <= 0) total_tracks = 1;
+  for (int i = 0; i < total_tracks; i++) {
+    playlist[i] = i + 1;
+  }
+  for (int i = total_tracks - 1; i > 0; i--) {
     int j = random(i + 1);
     int temp = playlist[i];
     playlist[i] = playlist[j];
@@ -58,16 +63,16 @@ static void shuffle_playlist() {
 
 static int get_next_track() {
   if (play_mode == 0) {
-    // Sequential: 1 -> 2 -> ... -> 7 -> 1
+    // Sequential: 1 -> 2 -> ... -> total_tracks -> 1
     int track = current_seq_track;
     current_seq_track++;
-    if (current_seq_track > TOTAL_TRACKS) {
+    if (current_seq_track > total_tracks) {
       current_seq_track = 1;
     }
     return track;
   } else {
     // Random / Shuffle
-    if (playlist_index >= TOTAL_TRACKS) {
+    if (playlist_index >= total_tracks) {
       shuffle_playlist();
     }
     return playlist[playlist_index++];
@@ -620,6 +625,17 @@ void setup() {
     Serial.println("[DFPlayer] Fallback ready!");
   }
 
+  // Auto-detect number of tracks on SD Card
+  delay(300);
+  int detected_tracks = myDFPlayer.readFileCounts();
+  if (detected_tracks > 0 && detected_tracks <= MAX_TRACKS) {
+    total_tracks = detected_tracks;
+    Serial.printf("[DFPlayer] Auto-detected %d tracks on SD card!\n", total_tracks);
+  } else {
+    Serial.printf("[DFPlayer] File count query returned %d, using default: %d tracks\n", detected_tracks, total_tracks);
+  }
+  shuffle_playlist();
+
   Serial.println("\n========================================================");
   Serial.println("  ESP32-S3 SuperMini Wake Word: '33rd Anniversary' ❤️   ");
   Serial.println("========================================================");
@@ -627,10 +643,11 @@ void setup() {
   Serial.printf("PSRAM Available  : %.2f MB\n", ESP.getPsramSize() / (1024.0 * 1024.0));
   Serial.printf("Free PSRAM       : %d bytes\n", ESP.getFreePsram());
   Serial.println("--------------------------------------------------------");
+  Serial.printf("Total Songs      : %d tracks (Auto-Detected)\n", total_tracks);
   Serial.printf("Motor Speed Delay: %u ms (Loaded from Flash)\n", step_delay_ms);
   Serial.printf("Wake Threshold   : %.2f (Loaded from Flash)\n", wake_word_threshold);
   Serial.printf("DFPlayer Volume  : %u / 30 (Loaded from Flash)\n", df_volume);
-  Serial.printf("Music Play Mode  : %s (Loaded from Flash)\n", play_mode == 0 ? "Sequential (1-7)" : "Random (Shuffle)");
+  Serial.printf("Music Play Mode  : %s (Loaded from Flash)\n", play_mode == 0 ? "Sequential (1..N)" : "Random (Shuffle)");
   Serial.println("--------------------------------------------------------");
   Serial.println("Microphone (INMP441): SD=GPIO4, WS=GPIO5, SCK=GPIO6");
   Serial.println("Stepper (ULN2003)   : IN1=GPIO9, IN2=GPIO10, IN3=GPIO11, IN4=GPIO12");

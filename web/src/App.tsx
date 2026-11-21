@@ -293,7 +293,7 @@ export default function App() {
               }`}
             >
               <Repeat className="w-7 h-7 stroke-[2.5]" />
-              <span>เล่นเรียง (1 ➡️ 7)</span>
+              <span>เล่นตามลำดับ</span>
             </button>
 
             <button
