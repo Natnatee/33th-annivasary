@@ -3,6 +3,7 @@
 #include <driver/i2s.h>
 #include <Preferences.h>
 #include <NimBLEDevice.h>
+#include <DFRobotDFPlayerMini.h>
 
 // ==========================================
 // Pin Configurations
@@ -23,6 +24,40 @@ static const int PIN_STEPPER_IN4 = 12;  // IN4 -> GPIO 12
 static const int PIN_LIGHT_EXT   = 13;
 static const int PIN_LIGHT_48    = 48;
 
+// DFPlayer Mini Pins (UART1)
+static const int PIN_DF_TX       = 1;   // ESP32 TX (GPIO 1) -> DFPlayer RX (via 1k resistor)
+static const int PIN_DF_RX       = 2;   // ESP32 RX (GPIO 2) <- DFPlayer TX
+static const int PIN_DF_BUSY     = 3;   // DFPlayer Pin 16 (BUSY) -> GPIO 3 (LOW = Playing, HIGH = Done)
+
+// ==========================================
+// DFPlayer Mini & Playlist Management
+// ==========================================
+HardwareSerial dfSerial(1);
+DFRobotDFPlayerMini myDFPlayer;
+static bool dfplayer_ready = false;
+static unsigned long track_start_time = 0;
+
+static const int TOTAL_TRACKS = 7;
+static int playlist[TOTAL_TRACKS] = {1, 2, 3, 4, 5, 6, 7};
+static int playlist_index = 0;
+
+static void shuffle_playlist() {
+  for (int i = TOTAL_TRACKS - 1; i > 0; i--) {
+    int j = random(i + 1);
+    int temp = playlist[i];
+    playlist[i] = playlist[j];
+    playlist[j] = temp;
+  }
+  playlist_index = 0;
+}
+
+static int get_next_track() {
+  if (playlist_index >= TOTAL_TRACKS) {
+    shuffle_playlist();
+  }
+  return playlist[playlist_index++];
+}
+
 // ==========================================
 // BLE GATT Service & Characteristics UUIDs
 // ==========================================
@@ -33,7 +68,7 @@ static const int PIN_LIGHT_48    = 48;
 #define CHAR_STATE_UUID     "19b10004-e8f2-537e-4f6c-d104768a1214"
 
 // Dynamic Parameters (Persistent via Preferences)
-static volatile uint32_t step_delay_ms = 3;            // Speed while spinning: default 3ms
+static volatile uint32_t step_delay_ms = 3;            // Speed while spinning: default 3ms (0 = disabled)
 static volatile float wake_word_threshold = 0.80f;     // Default 0.80
 static volatile uint8_t df_volume = 20;                // Default 20 (0 - 30)
 
@@ -161,16 +196,28 @@ static void toggle_system(bool enable) {
   if (enable) {
     system_active = true;
     set_light(true);
-    stepper_state = STEPPER_RUNNING;
+    if (step_delay_ms > 0) {
+      stepper_state = STEPPER_RUNNING;
+    }
+
+    int track = get_next_track();
+    if (dfplayer_ready) {
+      myDFPlayer.play(track);
+      track_start_time = millis();
+    }
+
     notify_ble_state(true);
     Serial.println("\n********************************************************");
-    Serial.println("  >>> [TOGGLE ON] Light ON & Stepper Motor SPINNING! ❤️  ");
+    Serial.printf("  >>> [TOGGLE ON] Playing Track #%d | Light ON & Motor Active! ❤️\n", track);
     Serial.println("********************************************************\n");
   } else {
     system_active = false;
+    if (dfplayer_ready) {
+      myDFPlayer.stop();
+    }
     stepper_state = STEPPER_RETURNING;
     Serial.println("\n********************************************************");
-    Serial.println("  >>> [TOGGLE OFF] Stepper RETURNING to 0... Light OFF at 0!");
+    Serial.println("  >>> [TOGGLE OFF] Music STOPPED | Stepper RETURNING to 0... Light OFF at 0!");
     Serial.println("********************************************************\n");
   }
 }
@@ -187,7 +234,6 @@ class ServerCallbacks : public NimBLEServerCallbacks {
   void onDisconnect(NimBLEServer* pServer) override {
     ble_client_connected = false;
     Serial.println("\n[BLE] Client Disconnected.");
-    // Restart advertising if still within 5 min window
     if (ble_active) {
       NimBLEDevice::startAdvertising();
     }
@@ -240,6 +286,9 @@ class VolumeCallbacks : public NimBLECharacteristicCallbacks {
         preferences.begin("anniv33", false);
         preferences.putUChar("volume", df_volume);
         preferences.end();
+        if (dfplayer_ready) {
+          myDFPlayer.volume(df_volume);
+        }
         Serial.printf("[BLE] Updated Volume: %u / 30 (Saved to Flash)\n", df_volume);
       }
     }
@@ -262,7 +311,7 @@ class StateCallbacks : public NimBLECharacteristicCallbacks {
 static void init_ble() {
   Serial.println("[BLE] Initializing NimBLE Server: '33rd-Anniversary'...");
   NimBLEDevice::init("33rd-Anniversary");
-  NimBLEDevice::setPower(ESP_PWR_LVL_P3); // Moderate power to keep cool & save energy
+  NimBLEDevice::setPower(ESP_PWR_LVL_P3);
 
   pServer = NimBLEDevice::createServer();
   pServer->setCallbacks(new ServerCallbacks());
@@ -454,7 +503,7 @@ static volatile uint32_t overrun_count = 0;
 // Wait until a slice of audio is ready
 static bool microphone_inference_record(void) {
   if (inference.buf_ready == 1) {
-    overrun_count++;  // inference slower than audio slice
+    overrun_count = overrun_count + 1;
     inference.buf_ready = 0;
   }
 
@@ -487,13 +536,12 @@ void setup() {
   pinMode(PIN_LIGHT_48, OUTPUT);
   set_light(false);
 
-  // Startup Light Test
-  set_light(true);
-  delay(200);
-  set_light(false);
-
   // Don't block on USB CDC so the board runs standalone (power bank)
-  delay(1500);
+  delay(1200);
+
+  // Seed random generator
+  randomSeed(micros());
+  shuffle_playlist();
 
   // Load saved preferences from Flash
   preferences.begin("anniv33", true); // Read-only
@@ -501,6 +549,24 @@ void setup() {
   wake_word_threshold = preferences.getFloat("threshold", 0.80f);
   df_volume = preferences.getUChar("volume", 20);
   preferences.end();
+
+  // Initialize DFPlayer Mini (UART1 on GPIO 2 RX, GPIO 1 TX)
+  dfSerial.begin(9600, SERIAL_8N1, PIN_DF_RX, PIN_DF_TX);
+  pinMode(PIN_DF_BUSY, INPUT_PULLUP);
+
+  Serial.println("\n[DFPlayer] Initializing...");
+  // Use begin(stream, isACK = false, doReset = false) for instant, reliable init
+  if (myDFPlayer.begin(dfSerial, false, false)) {
+    dfplayer_ready = true;
+    delay(100);
+    myDFPlayer.volume(df_volume);
+    Serial.printf("[DFPlayer] Ready! Volume: %u / 30\n", df_volume);
+  } else {
+    dfplayer_ready = true;
+    delay(100);
+    myDFPlayer.volume(df_volume);
+    Serial.println("[DFPlayer] Fallback ready!");
+  }
 
   Serial.println("\n========================================================");
   Serial.println("  ESP32-S3 SuperMini Wake Word: '33rd Anniversary' ❤️   ");
@@ -515,14 +581,47 @@ void setup() {
   Serial.println("--------------------------------------------------------");
   Serial.println("Microphone (INMP441): SD=GPIO4, WS=GPIO5, SCK=GPIO6");
   Serial.println("Stepper (ULN2003)   : IN1=GPIO9, IN2=GPIO10, IN3=GPIO11, IN4=GPIO12");
+  Serial.println("DFPlayer Mini (UART): TX=GPIO1 (to RX via 1k), RX=GPIO2 (from TX), BUSY=GPIO3");
   Serial.println("Light Output        : GPIO 13 + Onboard Red LED 48");
   Serial.println("Trigger Word        : 'สามสิบสามปี' (Label: 33_years)");
-  Serial.println("Control Mode        : Speak to Toggle ON/OFF (Returns to 0 at OFF)");
   Serial.println("Web BLE Service     : Active for 5 minutes on boot");
   Serial.println("========================================================\n");
 
   // Launch Stepper Task on Core 0 (smooth, independent rotation)
   xTaskCreatePinnedToCore(stepper_motor_task, "StepperTask", 2048, NULL, 5, NULL, 0);
+
+  // ----------------------------------------------------
+  // Power-On Self-Test (POST): 10-Second Test on Boot
+  // 1. Play Track 1
+  // 2. Turn ON Light
+  // 3. Spin Stepper Motor
+  // 4. After 10s: Stop music, return stepper to 0°, turn off light
+  // ----------------------------------------------------
+  Serial.println(">>> [SELF-TEST] 10-Second Power-On Self-Test Starting...");
+  set_light(true);
+  if (dfplayer_ready) {
+    myDFPlayer.play(1); // Play track 1
+  }
+  if (step_delay_ms > 0) {
+    stepper_state = STEPPER_RUNNING;
+  }
+
+  unsigned long self_test_start = millis();
+  while (millis() - self_test_start < 10000) {
+    delay(50);
+  }
+
+  Serial.println(">>> [SELF-TEST] 10s Finished. Stopping music & returning stepper to Home 0°...");
+  if (dfplayer_ready) {
+    myDFPlayer.stop();
+  }
+  stepper_state = STEPPER_RETURNING;
+
+  // Wait until stepper reaches 0 (Home)
+  while (stepper_state == STEPPER_RETURNING) {
+    delay(20);
+  }
+  Serial.println(">>> [SELF-TEST] Self-Test Completed! Stepper at 0°, Lights OFF, Ready.\n");
 
   // Initialize BLE Server (Runs on Core 0 background)
   init_ble();
@@ -545,6 +644,15 @@ void loop() {
       Serial.println("[BLE] Shutting down BLE radio to save power & prevent RF interference.\n");
       NimBLEDevice::deinit(true);
       ble_active = false;
+    }
+  }
+
+  // Auto-stop when song finishes playing
+  if (system_active && dfplayer_ready) {
+    // BUSY pin: LOW while playing, HIGH when idle/finished
+    if (digitalRead(PIN_DF_BUSY) == HIGH && (millis() - track_start_time > 2000)) {
+      Serial.println("\n[SYSTEM] Song finished! Auto-stopping and returning to 0°...");
+      toggle_system(false);
     }
   }
 
@@ -583,13 +691,25 @@ void loop() {
     if (strcmp(label, "33_years") == 0 && score >= wake_word_threshold) {
       unsigned long now = millis();
       if (now >= wake_word_cooldown_until) {
-        wake_word_cooldown_until = now + 2500; // 2.5s cooldown to prevent double toggle
-        toggle_system(!system_active);
+        wake_word_cooldown_until = now + 2500; // 2.5s cooldown
+
+        if (!system_active) {
+          // System was OFF -> Turn ON & play random track
+          toggle_system(true);
+        } else {
+          // Already playing -> Skip to next random track!
+          int track = get_next_track();
+          if (dfplayer_ready) {
+            myDFPlayer.play(track);
+            track_start_time = millis();
+          }
+          Serial.printf("\n>>> [NEXT TRACK] '33_years' Detected while playing -> Skipping to Track #%d\n", track);
+        }
       }
     }
   }
 
-  // Print every slice so we can see what the model thinks
+  // Print every slice for serial debugging
   Serial.printf("[%5lu] 33=%.2f noise=%.2f unk=%.2f | peak=%5ld | dsp=%dms nn=%dms | overrun=%lu | Sys=%s (MotorPos=%ld) | BLE=%s\n",
                 (unsigned long)dbg_count++, s33, snoise, sunk, (long)peak,
                 result.timing.dsp, result.timing.classification, (unsigned long)overrun_count,
