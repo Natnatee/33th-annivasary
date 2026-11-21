@@ -237,12 +237,66 @@ static void toggle_system(bool enable) {
   } else {
     system_active = false;
     if (dfplayer_ready) {
+      myDFPlayer.pause();
+      delay(10);
       myDFPlayer.stop();
     }
     stepper_state = STEPPER_RETURNING;
     Serial.println("\n********************************************************");
     Serial.println("  >>> [TOGGLE OFF] Music STOPPED | Stepper RETURNING to 0... Light OFF at 0!");
     Serial.println("********************************************************\n");
+  }
+}
+
+// ==========================================
+// Physical Push Button Task on Core 0 (Checked every 10ms)
+// Short Click (< 2.0s) : Toggle ON or Next Track
+// Long Press  (>= 2.0s): Force STOP immediately WHILE holding!
+// ==========================================
+static void button_task(void *pvParameters) {
+  static bool last_btn_state = HIGH;
+  static unsigned long btn_press_time = 0;
+  static bool long_press_handled = false;
+
+  while (true) {
+    bool current_btn_state = digitalRead(PIN_BUTTON);
+
+    if (last_btn_state == HIGH && current_btn_state == LOW) {
+      // Button just pressed down
+      btn_press_time = millis();
+      long_press_handled = false;
+    } 
+    else if (current_btn_state == LOW) {
+      // Button is being held down -> Trigger immediately once 2.0s is reached!
+      if (!long_press_handled && (millis() - btn_press_time >= 2000)) {
+        long_press_handled = true;
+        Serial.println("\n>>> [BUTTON] Long press (2.0s reached) -> Force STOP immediately while holding!");
+        if (system_active || stepper_state == STEPPER_RUNNING) {
+          toggle_system(false);
+        }
+      }
+    } 
+    else if (last_btn_state == LOW && current_btn_state == HIGH) {
+      // Button released
+      // If long press was already handled while holding, do nothing on release
+      if (!long_press_handled && (millis() - btn_press_time >= 50)) {
+        Serial.println("\n>>> [BUTTON] Short click -> Trigger / Next Track!");
+        if (!system_active) {
+          toggle_system(true);
+        } else {
+          int track = get_next_track();
+          if (dfplayer_ready) {
+            myDFPlayer.play(track);
+            track_start_time = millis();
+          }
+          Serial.printf("\n>>> [NEXT TRACK] Button clicked -> Playing Track #%d (%s)\n",
+                        track, play_mode == 0 ? "Sequential" : "Shuffle");
+        }
+      }
+    }
+    last_btn_state = current_btn_state;
+
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
 
@@ -654,7 +708,7 @@ void setup() {
   Serial.println("--------------------------------------------------------");
   Serial.println("Microphone (INMP441): SD=GPIO4, WS=GPIO5, SCK=GPIO6");
   Serial.println("Stepper (ULN2003)   : IN1=GPIO9, IN2=GPIO10, IN3=GPIO11, IN4=GPIO12");
-  Serial.println("Push Button (GND)   : GPIO 8 (Short: Trigger/Next | Long 1.5s: Stop)");
+  Serial.println("Push Button (GND)   : GPIO 8 (Short: Trigger/Next | Long 2.0s: Stop)");
   Serial.println("DFPlayer Mini (UART): TX=GPIO1 (to RX via 1k), RX=GPIO2 (from TX), BUSY=GPIO3");
   Serial.println("Light Output        : GPIO 13 + Onboard Red LED 48");
   Serial.println("Trigger Word        : 'สามสิบสามปี' (Label: 33_years)");
@@ -663,6 +717,9 @@ void setup() {
 
   // Launch Stepper Task on Core 0 (smooth, independent rotation)
   xTaskCreatePinnedToCore(stepper_motor_task, "StepperTask", 2048, NULL, 5, NULL, 0);
+
+  // Launch Push Button Task on Core 0 (instant 10ms check, cuts music immediately when held >= 2.0s)
+  xTaskCreatePinnedToCore(button_task, "ButtonTask", 2048, NULL, 4, NULL, 0);
 
   // Initialize BLE Server (Runs on Core 0 background)
   init_ble();
@@ -687,48 +744,6 @@ void loop() {
       ble_active = false;
     }
   }
-
-  // ----------------------------------------------------
-  // Physical Push Button on GPIO 8 (Active LOW)
-  // Short Click (< 1.5s) : Toggle ON or Next Track
-  // Long Press  (>= 1.5s): Force STOP & Return to 0°
-  // ----------------------------------------------------
-  static bool last_btn_state = HIGH;
-  static unsigned long btn_press_time = 0;
-  static bool long_press_handled = false;
-
-  bool current_btn_state = digitalRead(PIN_BUTTON);
-  if (last_btn_state == HIGH && current_btn_state == LOW) {
-    // Just pressed
-    btn_press_time = millis();
-    long_press_handled = false;
-  } else if (current_btn_state == LOW) {
-    // Being held down
-    if (!long_press_handled && (millis() - btn_press_time >= 1500)) {
-      long_press_handled = true;
-      Serial.println("\n>>> [BUTTON] Long press (1.5s) -> Force STOP!");
-      if (system_active) {
-        toggle_system(false);
-      }
-    }
-  } else if (last_btn_state == LOW && current_btn_state == HIGH) {
-    // Released
-    if (!long_press_handled && (millis() - btn_press_time >= 50)) {
-      Serial.println("\n>>> [BUTTON] Short press -> Trigger / Next Track!");
-      if (!system_active) {
-        toggle_system(true);
-      } else {
-        int track = get_next_track();
-        if (dfplayer_ready) {
-          myDFPlayer.play(track);
-          track_start_time = millis();
-        }
-        Serial.printf("\n>>> [NEXT TRACK] Button clicked -> Playing Track #%d (%s)\n",
-                      track, play_mode == 0 ? "Sequential" : "Shuffle");
-      }
-    }
-  }
-  last_btn_state = current_btn_state;
 
   // Auto-stop when song finishes playing
   if (system_active && dfplayer_ready) {
