@@ -464,9 +464,12 @@ static void capture_samples_task(void *arg) {
     if (err == ESP_OK && bytes_read > 0) {
       uint32_t samples_read = bytes_read / sizeof(int32_t);
 
-      // Convert 24-bit INMP441 sample (in 32-bit slot) to 16-bit PCM for Edge Impulse
+      // Convert 24-bit INMP441 sample to 16-bit PCM with +12dB (4x) Digital Gain Boost for long-range pickup
       for (uint32_t x = 0; x < samples_read; x++) {
-        sample_buffer[x] = (int16_t)(raw_i2s_buffer[x] >> 14);
+        int32_t val = raw_i2s_buffer[x] >> 12; // 4x Gain Boost
+        if (val > 32767) val = 32767;
+        else if (val < -32768) val = -32768;
+        sample_buffer[x] = (int16_t)val;
       }
 
       audio_inference_callback(samples_read);
