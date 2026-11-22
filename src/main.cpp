@@ -88,11 +88,13 @@ static int get_next_track() {
 #define CHAR_VOLUME_UUID    "19b10003-e8f2-537e-4f6c-d104768a1214"
 #define CHAR_STATE_UUID     "19b10004-e8f2-537e-4f6c-d104768a1214"
 #define CHAR_PLAYMODE_UUID  "19b10005-e8f2-537e-4f6c-d104768a1214"
+#define CHAR_LIGHTMODE_UUID "19b10006-e8f2-537e-4f6c-d104768a1214"
 
 // Dynamic Parameters (Persistent via Preferences)
 static volatile uint32_t step_delay_ms = 3;            // Speed while spinning: default 3ms (0 = disabled)
 static volatile float wake_word_threshold = 0.80f;     // Default 0.80
 static volatile uint8_t df_volume = 20;                // Default 20 (0 - 30)
+static volatile uint8_t light_mode = 0;                // 0 = Breathing (Default), 1 = Solid ON, 2 = Blink
 
 static Preferences preferences;
 
@@ -103,6 +105,7 @@ static NimBLECharacteristic* pCharThreshold = nullptr;
 static NimBLECharacteristic* pCharVolume = nullptr;
 static NimBLECharacteristic* pCharState = nullptr;
 static NimBLECharacteristic* pCharPlayMode = nullptr;
+static NimBLECharacteristic* pCharLightMode = nullptr;
 
 static unsigned long ble_boot_time = 0;
 static const unsigned long BLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
@@ -161,11 +164,50 @@ static void do_one_step(int dir) {
                    STEP_SEQ[step_index][3]);
 }
 
-// Light control
+// Light PWM control
+static void set_light_duty(uint8_t duty) {
+  analogWrite(PIN_LIGHT_EXT, duty);
+  analogWrite(PIN_LIGHT_48, duty);
+}
+
 static void set_light(bool state) {
-  uint8_t val = state ? HIGH : LOW;
-  digitalWrite(PIN_LIGHT_EXT, val);
-  digitalWrite(PIN_LIGHT_48, val);
+  set_light_duty(state ? 255 : 0);
+}
+
+// Light pattern animation update (Breathing, Solid, Blink)
+static void update_light() {
+  if (!system_active && stepper_state == STEPPER_IDLE) {
+    set_light_duty(0);
+    return;
+  }
+
+  // If returning to 0 (parking), keep gentle glow
+  if (stepper_state == STEPPER_RETURNING) {
+    set_light_duty(160);
+    return;
+  }
+
+  switch (light_mode) {
+    case 0: { // Breathing / Fade in-out (Default: ~2.8s smooth breathing cycle)
+      float progress = (millis() % 2800) / 2800.0f;
+      float s = (sinf(progress * 2.0f * 3.14159265f - 1.5707963f) + 1.0f) * 0.5f; // 0.0 to 1.0
+      int duty = (int)(s * s * 255.0f); // Gamma-corrected curve
+      set_light_duty((uint8_t)duty);
+      break;
+    }
+    case 1: { // Solid ON
+      set_light_duty(255);
+      break;
+    }
+    case 2: { // Blink (400ms ON / 400ms OFF)
+      bool on = ((millis() / 400) % 2) == 0;
+      set_light_duty(on ? 255 : 0);
+      break;
+    }
+    default:
+      set_light_duty(255);
+      break;
+  }
 }
 
 // Notify Web BLE client of state change
@@ -296,7 +338,10 @@ static void button_task(void *pvParameters) {
     }
     last_btn_state = current_btn_state;
 
-    vTaskDelay(pdMS_TO_TICKS(10));
+    // Update Light Animation (Breathing / Solid / Blink)
+    update_light();
+
+    vTaskDelay(pdMS_TO_TICKS(15));
   }
 }
 
@@ -400,6 +445,24 @@ class PlayModeCallbacks : public NimBLECharacteristicCallbacks {
   }
 };
 
+class LightModeCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic* pCharacteristic) override {
+    std::string value = pCharacteristic->getValue();
+    if (!value.empty()) {
+      uint8_t val = (uint8_t)value[0];
+      if (val <= 2) {
+        light_mode = val;
+        preferences.begin("anniv33", false);
+        preferences.putUChar("light_mode", light_mode);
+        preferences.end();
+        Serial.printf("[BLE] Updated Light Mode: %u (%s) (Saved to Flash)\n",
+                      light_mode,
+                      light_mode == 0 ? "Breathing" : (light_mode == 1 ? "Solid" : "Blink"));
+      }
+    }
+  }
+};
+
 static void init_ble() {
   Serial.println("[BLE] Initializing NimBLE Server: '33rd-Anniversary'...");
   NimBLEDevice::init("33rd-Anniversary");
@@ -454,6 +517,15 @@ static void init_ble() {
   uint8_t pmVal = play_mode;
   pCharPlayMode->setValue(&pmVal, 1);
   pCharPlayMode->setCallbacks(new PlayModeCallbacks());
+
+  // Light Mode Characteristic
+  pCharLightMode = pService->createCharacteristic(
+    CHAR_LIGHTMODE_UUID,
+    NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE
+  );
+  uint8_t lmVal = light_mode;
+  pCharLightMode->setValue(&lmVal, 1);
+  pCharLightMode->setCallbacks(new LightModeCallbacks());
 
   pService->start();
 
@@ -662,6 +734,8 @@ void setup() {
   wake_word_threshold = preferences.getFloat("threshold", 0.80f);
   df_volume = preferences.getUChar("volume", 20);
   play_mode = preferences.getUChar("play_mode", 0); // 0 = Sequential, 1 = Random
+  light_mode = preferences.getUChar("light_mode", 0); // 0 = Breathing (Default), 1 = Solid, 2 = Blink
+  if (light_mode > 2) light_mode = 0;
   preferences.end();
 
   // Initialize DFPlayer Mini (UART1 on GPIO 2 RX, GPIO 1 TX)
@@ -705,6 +779,7 @@ void setup() {
   Serial.printf("Wake Threshold   : %.2f (Loaded from Flash)\n", wake_word_threshold);
   Serial.printf("DFPlayer Volume  : %u / 30 (Loaded from Flash)\n", df_volume);
   Serial.printf("Music Play Mode  : %s (Loaded from Flash)\n", play_mode == 0 ? "Sequential (1..N)" : "Random (Shuffle)");
+  Serial.printf("Light Mode       : %s (Loaded from Flash)\n", light_mode == 0 ? "Breathing (Fade)" : (light_mode == 1 ? "Solid ON" : "Blink"));
   Serial.println("--------------------------------------------------------");
   Serial.println("Microphone (INMP441): SD=GPIO4, WS=GPIO5, SCK=GPIO6");
   Serial.println("Stepper (ULN2003)   : IN1=GPIO9, IN2=GPIO10, IN3=GPIO11, IN4=GPIO12");

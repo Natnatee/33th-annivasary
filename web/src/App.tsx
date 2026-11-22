@@ -11,7 +11,10 @@ import {
   Check,
   Repeat,
   Shuffle,
-  Music
+  Music,
+  Sparkles,
+  Sun,
+  Zap
 } from 'lucide-react';
 import { bleService } from './ble';
 import type { DeviceConfig } from './ble';
@@ -63,6 +66,7 @@ export default function App() {
   const [micLevel, setMicLevel] = useState<number>(3);           // Level 1..5 (Default 3)
   const [volLevel, setVolLevel] = useState<number>(3);           // Level 0..5 (Default 3)
   const [playMode, setPlayMode] = useState<number>(0);           // 0 = Sequential, 1 = Random
+  const [lightMode, setLightMode] = useState<number>(0);         // 0 = Breathing (Default), 1 = Solid, 2 = Blink
   const [isRunning, setIsRunning] = useState<boolean>(false);
 
   useEffect(() => {
@@ -84,6 +88,7 @@ export default function App() {
       setMicLevel(getThresholdLevel(config.threshold));
       setVolLevel(getVolumeLevel(config.volume));
       setPlayMode(config.playMode || 0);
+      setLightMode(config.lightMode !== undefined ? config.lightMode : 0);
       setIsRunning(config.isRunning);
       setIsConnected(true);
     } catch (err: unknown) {
@@ -135,6 +140,15 @@ export default function App() {
     setPlayMode(mode);
     try {
       await bleService.writePlayMode(mode);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleSelectLightMode = async (mode: number) => {
+    setLightMode(mode);
+    try {
+      await bleService.writeLightMode(mode);
     } catch (e) {
       console.error(e);
     }
@@ -306,6 +320,52 @@ export default function App() {
             >
               <Shuffle className="w-7 h-7 stroke-[2.5]" />
               <span>สุ่มเพลง</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Setting 3: Light Mode (ค่อยๆ สว่าง-ดับ, ติดแช่, กระพริบ) */}
+        <div className={`bg-white rounded-3xl p-5 shadow-sm border border-stone-200 space-y-3 transition-opacity duration-300 ${!isConnected ? 'opacity-40 pointer-events-none' : ''}`}>
+          <div className="flex items-center gap-2.5">
+            <Sparkles className="w-6 h-6 text-amber-500" />
+            <h2 className="text-lg font-bold text-stone-800">รูปแบบไฟ</h2>
+          </div>
+
+          <div className="grid grid-cols-3 gap-2 pt-1">
+            <button
+              onClick={() => handleSelectLightMode(0)}
+              className={`py-3.5 px-2 rounded-2xl font-bold text-sm flex flex-col items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                lightMode === 0
+                  ? 'bg-amber-500 text-white shadow-md shadow-amber-500/30 scale-102 ring-2 ring-amber-200'
+                  : 'bg-stone-100 active:bg-stone-200 text-stone-700'
+              }`}
+            >
+              <Sparkles className="w-6 h-6 stroke-[2.2]" />
+              <span className="text-xs sm:text-sm text-center">ค่อยๆ สว่าง-ดับ</span>
+            </button>
+
+            <button
+              onClick={() => handleSelectLightMode(1)}
+              className={`py-3.5 px-2 rounded-2xl font-bold text-sm flex flex-col items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                lightMode === 1
+                  ? 'bg-amber-500 text-white shadow-md shadow-amber-500/30 scale-102 ring-2 ring-amber-200'
+                  : 'bg-stone-100 active:bg-stone-200 text-stone-700'
+              }`}
+            >
+              <Sun className="w-6 h-6 stroke-[2.2]" />
+              <span className="text-xs sm:text-sm text-center">ติดแช่</span>
+            </button>
+
+            <button
+              onClick={() => handleSelectLightMode(2)}
+              className={`py-3.5 px-2 rounded-2xl font-bold text-sm flex flex-col items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                lightMode === 2
+                  ? 'bg-amber-500 text-white shadow-md shadow-amber-500/30 scale-102 ring-2 ring-amber-200'
+                  : 'bg-stone-100 active:bg-stone-200 text-stone-700'
+              }`}
+            >
+              <Zap className="w-6 h-6 stroke-[2.2]" />
+              <span className="text-xs sm:text-sm text-center">กระพริบ</span>
             </button>
           </div>
         </div>

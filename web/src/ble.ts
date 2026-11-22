@@ -5,6 +5,7 @@ export const CHAR_THRESHOLD_UUID = '19b10002-e8f2-537e-4f6c-d104768a1214';
 export const CHAR_VOLUME_UUID = '19b10003-e8f2-537e-4f6c-d104768a1214';
 export const CHAR_STATE_UUID = '19b10004-e8f2-537e-4f6c-d104768a1214';
 export const CHAR_PLAYMODE_UUID = '19b10005-e8f2-537e-4f6c-d104768a1214';
+export const CHAR_LIGHTMODE_UUID = '19b10006-e8f2-537e-4f6c-d104768a1214';
 
 export interface DeviceConfig {
   speed: number;       // Step delay ms (0 = stop, 1 - 10)
@@ -12,6 +13,7 @@ export interface DeviceConfig {
   volume: number;      // 0 - 30
   isRunning: boolean;  // 0 or 1
   playMode: number;    // 0 = Sequential, 1 = Random/Shuffle
+  lightMode: number;   // 0 = Breathing (Fade), 1 = Solid ON, 2 = Blink
 }
 
 export class BLEService {
@@ -22,6 +24,7 @@ export class BLEService {
   private charVolume: BluetoothRemoteGATTCharacteristic | null = null;
   private charState: BluetoothRemoteGATTCharacteristic | null = null;
   private charPlayMode: BluetoothRemoteGATTCharacteristic | null = null;
+  private charLightMode: BluetoothRemoteGATTCharacteristic | null = null;
 
   public onDisconnectCallback: (() => void) | null = null;
   public onStateChangeCallback: ((isRunning: boolean) => void) | null = null;
@@ -67,6 +70,14 @@ export class BLEService {
       this.charPlayMode = null;
     }
 
+    let lightModeVal = 0;
+    try {
+      this.charLightMode = await service.getCharacteristic(CHAR_LIGHTMODE_UUID);
+      lightModeVal = (await this.charLightMode.readValue()).getUint8(0);
+    } catch {
+      this.charLightMode = null;
+    }
+
     // Read initial values
     const speedVal = (await this.charSpeed.readValue()).getUint8(0);
     const threshVal = (await this.charThreshold.readValue()).getUint8(0);
@@ -89,6 +100,7 @@ export class BLEService {
       volume: volVal !== undefined ? volVal : 20,
       isRunning: stateVal === 1,
       playMode: playModeVal || 0,
+      lightMode: lightModeVal || 0,
     };
   }
 
@@ -122,6 +134,12 @@ export class BLEService {
     await this.charPlayMode.writeValue(data);
   }
 
+  async writeLightMode(mode: number): Promise<void> {
+    if (!this.charLightMode) return;
+    const data = new Uint8Array([Math.min(Math.max(mode, 0), 2)]);
+    await this.charLightMode.writeValue(data);
+  }
+
   disconnect(): void {
     if (this.device && this.device.gatt?.connected) {
       this.device.gatt.disconnect();
@@ -137,6 +155,7 @@ export class BLEService {
     this.charVolume = null;
     this.charState = null;
     this.charPlayMode = null;
+    this.charLightMode = null;
   }
 }
 

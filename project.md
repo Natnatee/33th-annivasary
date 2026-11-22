@@ -21,7 +21,7 @@
    - 🗣️ พูดคำว่า **"สามสิบสามปี"** หรือ 🔘 **กดปุ่มสั้น 1 ครั้ง:**
      - ถ้าเครื่องปิดอยู่ (OFF) ➡️ **เปิดทำงาน (เล่นเพลง + มอเตอร์หมุน + ไฟติด)**
      - ถ้าเครื่องกำลังเล่นอยู่ (ON) ➡️ **ข้ามไปเพลงถัดไป (Next Song)**
-   - 🔘 **กดปุ่มแช่ 1.5 วินาที (Long Press):** ➡️ **สั่งปิดทันที (เพลงหยุด + มอเตอร์กลับ 0° + ไฟดับ)**
+   - 🔘 **กดปุ่มแช่ 2.0 วินาที (Long Press):** ➡️ **สั่งปิดทันทีขณะกำลังกดแช่ (เพลงดับทันที + มอเตอร์กลับ 0° + ไฟดับ)** โดยมี Task บน Core 0 เช็คทุก 10ms ทันที ไม่ต้องรอปล่อยนิ้ว
 3. **Music Playback Modes (ปรับได้ผ่านหน้าเว็บ):**
    - 🔁 **โหมดปกติ (Sequential - Default):** เล่นเรียง `1 ➡️ 2 ➡️ 3 ➡️ ... ➡️ 7` จนครบแล้ววนใหม่ (เปิดเครื่องใหม่เริ่มที่เพลง 1 เสมอ จำใน RAM)
    - 🔀 **โหมดสุ่ม (Random / Shuffle):** สุ่มเพลงไม่ซ้ำจนครบ 7 เพลงแล้วเริ่มสุ่มชุดใหม่
@@ -31,13 +31,18 @@
    - รันเป็น Background Task บน **Core 0** (FreeRTOS)
    - เมื่อสั่งปิด มอเตอร์จะคำนวณทางที่สั้นที่สุดแล้วหมุนกลับมาที่จุด 0° ก่อนหยุดจ่ายกระแสเข้าขดลวด (`0 mA`)
    - รองรับโหมด "ไม่หมุน" (Speed = 0) จากหน้าเว็บ
-5. **Light Output (Completed & Verified for Toggle):**
-   - ขา GPIO 13 + Onboard Red LED 48
-   - สว่างค้างขณะทำงาน และจะดับลง**หลังจากที่มอเตอร์หมุนกลับถึงจุด 0° เรียบร้อยแล้วเท่านั้น**
+5. **Light Output (PWM Multi-Pattern Control):**
+   - ขา GPIO 13 (ขับทรานซิสเตอร์ 2N3904 ผ่าน R 1k ที่ Base) + Onboard Red LED 48
+   - **3 รูปแบบไฟ (บันทึก Flash Memory):**
+     1. ✨ **ค่อยๆ สว่าง-ดับ (Breathing / Fade - Default):** รอบละ ~2.8s ปรับความสว่างแบบ Gamma Sine สวยงามนุ่มนวล
+     2. ☀️ **ติดแช่ (Solid ON):** สว่างค้าง 100%
+     3. ⚡ **กระพริบ (Blink):** สลับติด 400ms / ดับ 400ms
+   - เมื่อสั่งปิด ไฟจะหรี่นำทางขณะมอเตอร์หมุนกลับ และจะดับสนิทเมื่อมอเตอร์ถึงจุด 0°
 6. **Web Bluetooth Interface (Elderly-Friendly):**
    - หน้าเว็บ [https://web-liard-nine-63.vercel.app/](https://web-liard-nine-63.vercel.app/)
    - ปรับความเร็วมอเตอร์ (⏸️ ไม่หมุน / ระดับ 1 - 5)
-   - โหมดเล่นเพลง (🔁 เล่นเรียง 1-7 vs 🔀 สุ่มเพลง)
+   - โหมดเล่นเพลง (🔁 เล่นเรียง vs 🔀 สุ่มเพลง)
+   - รูปแบบไฟ (✨ ค่อยๆ สว่าง-ดับ vs ☀️ ติดแช่ vs ⚡ กระพริบ)
    - ปรับความไวไมค์ (ระดับ 1 - 5)
    - ปรับความดังเพลง (🔇 ปิดเสียง / ระดับ 1 - 5)
    - สวิตช์ปุ่มเปิด/ปิดขนาดใหญ่
@@ -57,13 +62,13 @@
 | Stepper IN2 | GPIO 10 | ULN2003 (IN2) | Output | Half-step coil drive |
 | Stepper IN3 | GPIO 11 | ULN2003 (IN3) | Output | Half-step coil drive |
 | Stepper IN4 | GPIO 12 | ULN2003 (IN4) | Output | Half-step coil drive |
-| Push Button | GPIO 8 | Push Button to GND | Input | **Pullup ในชิป** (สั้น: เปิด/ข้าม, แช่ 1.5วิ: ปิด) |
+| Push Button | GPIO 8 | Push Button to GND | Input | **Pullup ในชิป** (สั้น: เปิด/ข้าม, แช่ 2.0วิ: ปิดทันที) |
 | DFPlayer TX | GPIO 1 | DFPlayer Mini (RX) | Output | **ผ่านตัวต้านทาน 1kΩ** |
 | DFPlayer RX | GPIO 2 | DFPlayer Mini (TX) | Input | ต่อตรง |
 | DFPlayer BUSY| GPIO 3 | DFPlayer Mini (Pin 16)| Input | LOW = กำลังเล่น, HIGH = เพลงจบ |
-| Light Out | GPIO 13 | External Light Drive | Output | ไดรฟ์ไฟ 100mA (ผ่านทรานซิสเตอร์/MOSFET) |
+| Light Out | GPIO 13 | 2N3904 NPN Base | Output | **ผ่านตัวต้านทาน 1kΩ** เข้าขา B (E ต่อ GND, C ต่อไฟ 5V ผ่าน 220Ω) |
 | Onboard LED | GPIO 48 | Onboard Red LED | Output | สว่างพร้อมไฟภายนอก |
-| Common GND | GND | Shared GND | Power | กราวด์ร่วม ESP32, DFPlayer, ULN2003, Mic, Button |
+| Common GND | GND | Shared GND | Power | กราวด์ร่วม ESP32, DFPlayer, ULN2003, Mic, Button, 2N3904 |
 
 ---
 
