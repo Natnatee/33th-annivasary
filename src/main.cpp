@@ -166,8 +166,8 @@ static void do_one_step(int dir) {
 
 // Light PWM control
 static void set_light_duty(uint8_t duty) {
-  analogWrite(PIN_LIGHT_EXT, duty);
-  analogWrite(PIN_LIGHT_48, duty);
+  analogWrite(PIN_LIGHT_EXT, duty);            // GPIO 13: 2N3904 NPN Base (Active HIGH: 0=OFF, 255=ON)
+  analogWrite(PIN_LIGHT_48, 255 - (int)duty);  // GPIO 48: SuperMini Onboard Red LED (Active LOW: 255=OFF, 0=ON)
 }
 
 static void set_light(bool state) {
@@ -283,9 +283,16 @@ static void toggle_system(bool enable) {
       delay(10);
       myDFPlayer.stop();
     }
-    stepper_state = STEPPER_RETURNING;
+    if (current_step_pos == 0) {
+      stepper_state = STEPPER_IDLE;
+      stepper_stop_coils();
+      set_light(false);
+      notify_ble_state(false);
+    } else {
+      stepper_state = STEPPER_RETURNING;
+    }
     Serial.println("\n********************************************************");
-    Serial.println("  >>> [TOGGLE OFF] Music STOPPED | Stepper RETURNING to 0... Light OFF at 0!");
+    Serial.println("  >>> [TOGGLE OFF] Music STOPPED | Light OFF (or returning to 0)");
     Serial.println("********************************************************\n");
   }
 }
@@ -821,12 +828,30 @@ void loop() {
   }
 
   // Auto-stop when song finishes playing
+  static bool df_playing_detected = false;
+  static bool busy_warn_printed = false;
   if (system_active && dfplayer_ready) {
-    // BUSY pin: LOW while playing, HIGH when idle/finished
-    if (digitalRead(PIN_DF_BUSY) == HIGH && (millis() - track_start_time > 2000)) {
-      Serial.println("\n[SYSTEM] Song finished! Auto-stopping and returning to 0°...");
+    int busy_pin_val = digitalRead(PIN_DF_BUSY);
+    if (busy_pin_val == LOW) {
+      df_playing_detected = true; // Confirmed: DFPlayer is actively playing
+      busy_warn_printed = false;
+    }
+
+    // Only auto-stop if DFPlayer actually started playing (LOW) and then returned to IDLE (HIGH)
+    if (df_playing_detected && (busy_pin_val == HIGH) && (millis() - track_start_time > 1500)) {
+      Serial.println("\n[SYSTEM] Song finished (BUSY returned to HIGH)! Auto-stopping and returning to 0°...");
+      df_playing_detected = false;
       toggle_system(false);
     }
+
+    // Helpful serial warning if BUSY pin never went LOW after 4 seconds
+    if (!df_playing_detected && (millis() - track_start_time > 4000) && !busy_warn_printed) {
+      busy_warn_printed = true;
+      Serial.println("\n[WARN] DFPlayer BUSY pin (GPIO 3) is still HIGH! Check wire on DFPlayer pin 16 (BUSY).");
+    }
+  } else {
+    df_playing_detected = false;
+    busy_warn_printed = false;
   }
 
   bool ok = microphone_inference_record();
